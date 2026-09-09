@@ -288,19 +288,9 @@ namespace wxl_video_screen
             return false;
         }
 
-        // Use the engine's actual view direction.  Deriving it from camera -> player works only while
-        // the stock third-person camera sits behind the character; orbit/front/free-camera views can
-        // otherwise place the screen behind the visible scene.
-        const float* view = camera::GetView();
-        float forwardX = view ? view[2] : playerPosition[0] - cameraPosition[0];
-        float forwardY = view ? view[6] : playerPosition[1] - cameraPosition[1];
+        float forwardX = playerPosition[0] - cameraPosition[0];
+        float forwardY = playerPosition[1] - cameraPosition[1];
         float length = std::sqrt(forwardX * forwardX + forwardY * forwardY);
-        if (!(length > 0.001f) || !std::isfinite(length))
-        {
-            forwardX = playerPosition[0] - cameraPosition[0];
-            forwardY = playerPosition[1] - cameraPosition[1];
-            length = std::sqrt(forwardX * forwardX + forwardY * forwardY);
-        }
         if (!(length > 0.001f) || !std::isfinite(length))
         {
             forwardX = 1.0f;
@@ -649,16 +639,11 @@ namespace wxl_video_screen
         device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0Fu);
         device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
         device->SetRenderState(D3DRS_ZWRITEENABLE, beforeWorld ? TRUE : FALSE);
-        // Never let terrain hide the diagnostic card.  As soon as live video is connected the user's
-        // occlusion preference applies normally.
         device->SetRenderState(D3DRS_ZENABLE,
-                               sceneDepth && (beforeWorld || (texture_ && depthTest_))
-                                   ? D3DZB_TRUE : D3DZB_FALSE);
-        // Build 12340's projection maps near-to-far depth in increasing order.  The live test
-        // positions proved the character was between the camera and this quad while GREATER_EQUAL
-        // still painted over it: the comparison was reversed.  Match the world's LESS_EQUAL test so
-        // a character, doodad, or terrain pixel with smaller depth remains in front of the screen.
-        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+                               sceneDepth && beforeWorld ? D3DZB_TRUE : D3DZB_FALSE);
+        // Seed the cleared depth buffer unconditionally; world geometry rendered afterward uses its
+        // normal depth test and can overwrite the screen wherever it is closer to the camera.
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
         DWORD depthBiasBits = 0;
         std::memcpy(&depthBiasBits, &depthBias_, sizeof(depthBiasBits));
         device->SetRenderState(D3DRS_DEPTHBIAS, depthBiasBits);
@@ -711,10 +696,6 @@ namespace wxl_video_screen
                       placed_ ? 1 : 0, mapId_);
             loggedFirstWorldScene_ = true;
         }
-        // With physical occlusion enabled, the scene-clear hook already placed the screen into the
-        // freshly cleared colour/depth targets. WoW's own world draw then naturally paints nearer
-        // characters and props over it. The end-of-scene path is retained for the intentional
-        // through-world mode.
         if (!depthTest_)
             DrawWorldScreen(static_cast<IDirect3DDevice9*>(args.device), args.sceneDepth, false);
     }
