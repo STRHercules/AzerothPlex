@@ -153,7 +153,7 @@ namespace wxl_plex
 
         HttpResponse Request(std::string_view url, std::wstring_view method,
                              std::string_view token, std::string_view clientId,
-                             std::string_view body = {})
+                             bool jsonResponse = false, std::string_view body = {})
         {
             const std::wstring wideUrl = Wide(url);
             if (wideUrl.empty()) return {0, ERROR_INVALID_PARAMETER, {}};
@@ -194,7 +194,9 @@ namespace wxl_plex
                 return {0, GetLastError(), {}};
             }
 
-            std::wstring headers = L"Accept: application/json, application/xml\r\n";
+            std::wstring headers = jsonResponse
+                ? L"Accept: application/json\r\n"
+                : L"Accept: application/xml\r\n";
             headers += L"X-Plex-Client-Identifier: " + Wide(clientId) + L"\r\n";
             headers += L"X-Plex-Product: AzerothPlex\r\nX-Plex-Version: 0.5.0\r\n";
             headers += L"X-Plex-Platform: Windows\r\nX-Plex-Device: WarcraftXL\r\n";
@@ -465,7 +467,7 @@ namespace wxl_plex
             }
 
             const HttpResponse response = Request("https://plex.tv/api/v2/pins?strong=true",
-                                                  L"POST", {}, clientId_);
+                                                  L"POST", {}, clientId_, true);
             PinAuth pin{};
             if (response.status < 200 || response.status >= 300 ||
                 !ParsePinJson(response.body, pin))
@@ -493,7 +495,7 @@ namespace wxl_plex
         {
             Sleep(1000);
             const HttpResponse response = Request(
-                "https://plex.tv/api/v2/pins/" + std::to_string(pinId), L"GET", {}, clientId_);
+                "https://plex.tv/api/v2/pins/" + std::to_string(pinId), L"GET", {}, clientId_, true);
             PinAuth pin{};
             if (response.status >= 200 && response.status < 300 && ParsePinJson(response.body, pin) &&
                 !pin.authToken.empty())
