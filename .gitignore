@@ -12,6 +12,7 @@ host/third_party/webview2/
 *.exp
 *.pdb
 *.ilk
+imgui.ini
 
 # Per-client state and WoW installation data
 world-screen.tsv
