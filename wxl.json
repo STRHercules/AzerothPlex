@@ -1,10 +1,10 @@
 {
   "manifest": 1,
   "extension": {
-    "id": "wxl-video-screen",
+    "id": "wxl-azeroth-plex",
     "version": "0.5.0",
     "abi": "1.1",
-    "entry": "wxl-video-screen.dll",
+    "entry": "wxl-azeroth-plex.dll",
     "assets": ["wxl-video-host.exe", "libmpv-2.dll"],
     "requires": {},
     "conflicts": [],
@@ -12,10 +12,10 @@
   },
   "deploy": {
     "mode": "release",
-    "match": "wxl-video-screen-*.zip"
+    "match": "wxl-azeroth-plex-*.zip"
   },
   "listing": {
-    "title": "Plex Cinema",
+    "title": "Azeroth Plex",
     "tagline": "Browse Plex and place native playback on a movable world-space screen.",
     "description": "README.md",
     "gallery": [],

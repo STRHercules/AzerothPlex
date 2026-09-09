@@ -27,7 +27,7 @@ namespace wxl_video_screen
 
     namespace
     {
-        constexpr char kTag[] = "wxl-video-screen";
+        constexpr char kTag[] = "wxl-azeroth-plex";
         constexpr wchar_t kHostWindowClass[] = L"WXLNativePlexHost";
         constexpr UINT kShowHostMessage = WM_APP + 0x45;
         constexpr UINT kHideHostMessage = WM_APP + 0x46;
@@ -74,7 +74,7 @@ namespace wxl_video_screen
         ConnectControl();
         LoadPlacement();
         if (!api_->HookAttach || !api_->HookAttach(
-                "wxl-video-screen.scene-clear",
+                "wxl-azeroth-plex.scene-clear",
                 wxl::game::gx::kSceneClearSeam,
                 reinterpret_cast<void*>(&VideoSurface::SceneClearHook),
                 reinterpret_cast<void**>(&originalSceneClear_),

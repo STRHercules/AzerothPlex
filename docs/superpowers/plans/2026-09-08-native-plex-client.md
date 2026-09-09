@@ -549,7 +549,7 @@ Modify these existing files:
 
 - [ ] **Step 5: Build the extension against WarcraftXL ABI 1.1.**
 
-  Copy the updated `extension/src` into the pinned `wxl-core/extensions/wxl-video-screen/` checkout and run the repository-native extension build. Expected: the DLL builds with no ABI or missing-symbol errors, and no YouTube/WebView2 text remains in extension source.
+  Copy the updated `extension/src` into the pinned `wxl-core/extensions/wxl-azeroth-plex/` checkout and run the repository-native extension build. Expected: `wxl-azeroth-plex.dll` builds with no ABI or missing-symbol errors, and no YouTube/WebView2 text remains in extension source.
 
 - [ ] **Step 6: Commit the extension checkpoint.**
 

@@ -8,7 +8,7 @@
 
 namespace
 {
-    constexpr char kTag[] = "wxl-video-screen";
+    constexpr char kTag[] = "wxl-azeroth-plex";
 
     void DrawPanel(void*)
     {
@@ -21,7 +21,7 @@ const WXL_PluginInfo* __cdecl WXL_Query(void)
     static const WXL_PluginInfo info = {
         sizeof(WXL_PluginInfo),
         WXL_API_VERSION,
-        "wxl-video-screen",
+        "wxl-azeroth-plex",
         300,
         WXL_CLIENT_BUILD,
     };
@@ -39,8 +39,8 @@ int __cdecl WXL_Load(const WXL_Api* api)
     auto& surface = wxl_video_screen::VideoSurface::Instance();
     if (!surface.Initialize(api)) return 0;
 
-    api->UiAddPanel("Video Cinema", &DrawPanel, nullptr);
+    api->UiAddPanel("Azeroth Plex", &DrawPanel, nullptr);
     api->Log(WXL_LOG_INFO, kTag,
-             "0.3.9 loaded: pre-world physical screen + parent-bound helper");
+             "0.5.0 loaded: native Plex screen + parent-bound helper");
     return 1;
 }

@@ -1,4 +1,4 @@
-// Native Plex helper used by wxl-video-screen.
+// Native Plex helper used by wxl-azeroth-plex.
 // Copyright (C) 2026 WarcraftXL contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 

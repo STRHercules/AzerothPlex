@@ -1,4 +1,4 @@
-# AzerothPlex
+# Azeroth Plex
 
 A native Plex client for the WarcraftXL 3.3.5a build-12340 client. It uses a
 small Win32/Dear ImGui helper with libmpv playback and mirrors the current
@@ -7,7 +7,7 @@ video onto a client-local, movable world-space screen.
 ## Install
 
 1. Use a WarcraftXL-enabled 32-bit build-12340 client.
-2. Install the release containing `wxl-video-screen.dll`,
+2. Install the release containing `wxl-azeroth-plex.dll`,
    `wxl-video-host.exe`, `libmpv-2.dll`, `wxl.json`, and this documentation.
 3. Restart the client when WarcraftXL requests it.
 4. Press **Insert**, open **Video Cinema**, and choose **Open Plex player**.
@@ -39,7 +39,7 @@ object. In the in-game **Video Cinema** panel:
 - enable distance-based audio and tune its range.
 
 Placement is saved to
-`Extensions/wxl-video-screen/world-screen.tsv` and restored per client.
+`Extensions/wxl-azeroth-plex/world-screen.tsv` and restored per client.
 
 ## Requirements and limits
 

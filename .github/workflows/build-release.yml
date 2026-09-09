@@ -1,0 +1,100 @@
+name: Build Azeroth Plex
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WXL_CORE_REF: v1.1
+  MPV_RELEASE: 20260608
+  MPV_ARCHIVE: mpv-dev-i686-20260608-git-6444c05.7z
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout Azeroth Plex
+        uses: actions/checkout@v4
+
+      - name: Checkout WarcraftXL ABI 1.1 core
+        uses: actions/checkout@v4
+        with:
+          repository: WarcraftXL/wxl-core
+          ref: ${{ env.WXL_CORE_REF }}
+          path: wxl-core
+          fetch-depth: 1
+
+      - name: Stage extension sources
+        shell: powershell
+        run: |
+          $extensionRoot = Join-Path $env:GITHUB_WORKSPACE 'wxl-core/extensions/wxl-azeroth-plex'
+          New-Item -ItemType Directory -Force -Path $extensionRoot | Out-Null
+          Copy-Item -Path (Join-Path $env:GITHUB_WORKSPACE 'extension/src/*') `
+            -Destination $extensionRoot -Recurse -Force
+
+      - name: Download pinned x86 libmpv
+        shell: powershell
+        run: |
+          $dependencyRoot = Join-Path $env:GITHUB_WORKSPACE 'third_party/mpv'
+          $archive = Join-Path $env:RUNNER_TEMP $env:MPV_ARCHIVE
+          New-Item -ItemType Directory -Force -Path $dependencyRoot | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/$env:MPV_RELEASE/$env:MPV_ARCHIVE" `
+            -OutFile $archive
+          $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+          if (-not (Test-Path $sevenZip)) { $sevenZip = '7z.exe' }
+          & $sevenZip x $archive "-o$dependencyRoot" -y
+          if ($LASTEXITCODE -ne 0) { throw "libmpv extraction failed: $LASTEXITCODE" }
+
+      - name: Build extension DLL
+        shell: powershell
+        run: |
+          cmake -S wxl-core -B wxl-core/build/dll -A Win32
+          cmake --build wxl-core/build/dll --config Release --target wxl-azeroth-plex
+
+      - name: Build native helper
+        shell: powershell
+        run: |
+          cmake -S host -B host/build -A Win32 `
+            -DMPV_ROOT="$env:GITHUB_WORKSPACE/third_party/mpv"
+          cmake --build host/build --config Release --target wxl-video-host
+
+      - name: Run native tests
+        shell: powershell
+        run: ctest --test-dir host/build -C Release --output-on-failure
+
+      - name: Package versioned release
+        id: package
+        shell: powershell
+        run: |
+          $manifest = Get-Content 'wxl.json' -Raw | ConvertFrom-Json
+          $version = $manifest.extension.version
+          if ($manifest.extension.id -ne 'wxl-azeroth-plex') {
+            throw "Manifest extension id is not wxl-azeroth-plex"
+          }
+          $packageName = "wxl-azeroth-plex-$version"
+          $stage = Join-Path $env:RUNNER_TEMP $packageName
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item "wxl-core/build/dll/Release/wxl-azeroth-plex.dll" $stage
+          Copy-Item "host/build/Release/wxl-video-host.exe" $stage
+          Copy-Item "third_party/mpv/libmpv-2.dll" $stage
+          Copy-Item 'wxl.json','README.md','THIRD_PARTY_NOTICES.md','LICENSE' $stage
+
+          $archive = Join-Path $env:GITHUB_WORKSPACE "$packageName.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -Force
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          "Package: $archive"
+          "SHA256: $hash"
+          "package_name=$packageName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload versioned package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: ${{ steps.package.outputs.package_name }}.zip
+          if-no-files-found: error
