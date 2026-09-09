@@ -278,6 +278,7 @@ namespace wxl_plex
 
             size_t connectionStart = device.find("<Connection");
             PlexServer best;
+            std::string mediaUri;
             int bestRank = -1;
             while (connectionStart != std::string_view::npos)
             {
@@ -299,10 +300,22 @@ namespace wxl_plex
                             best.uri = MakeServerUri(protocol, Attribute(connection, "address"),
                                                      Attribute(connection, "port"));
                     }
+                    if (protocol == "http" && mediaUri.empty())
+                        mediaUri = Attribute(connection, "uri");
+                    if (protocol == "http" && mediaUri.empty())
+                        mediaUri = MakeServerUri(protocol, Attribute(connection, "address"),
+                                                 Attribute(connection, "port"));
                 }
                 connectionStart = device.find("<Connection", connectionEnd);
             }
-            if (bestRank >= 0) result.push_back(std::move(best));
+            if (bestRank >= 0)
+            {
+                best.mediaUri = mediaUri.empty() ? best.uri : mediaUri;
+                if (mediaUri.empty() && best.mediaUri.rfind("https://", 0) == 0 &&
+                    best.mediaUri.find(".plex.direct") != std::string::npos)
+                    best.mediaUri = "http://" + best.mediaUri.substr(8);
+                result.push_back(std::move(best));
+            }
             deviceStart = blockEnd;
         }
         return result;
@@ -376,8 +389,9 @@ namespace wxl_plex
     PlexPlayback BuildDirectPlayback(const PlexItem& item, const PlexServer& server)
     {
         PlexPlayback result;
-        if (server.uri.empty() || item.partKey.empty()) return result;
-        result.uri = server.uri + item.partKey + "?X-Plex-Token=" + server.accessToken;
+        const std::string& mediaUri = server.mediaUri.empty() ? server.uri : server.mediaUri;
+        if (mediaUri.empty() || item.partKey.empty()) return result;
+        result.uri = mediaUri + item.partKey + "?X-Plex-Token=" + server.accessToken;
         return result;
     }
 
@@ -385,9 +399,10 @@ namespace wxl_plex
                                         std::string_view sessionId)
     {
         PlexPlayback result;
-        if (server.uri.empty() || item.partKey.empty()) return result;
-        const std::string source = server.uri + item.partKey;
-        result.uri = server.uri + "/video/:/transcode/universal/start.m3u8?path=" +
+        const std::string& mediaUri = server.mediaUri.empty() ? server.uri : server.mediaUri;
+        if (mediaUri.empty() || item.partKey.empty()) return result;
+        const std::string source = mediaUri + item.partKey;
+        result.uri = mediaUri + "/video/:/transcode/universal/start.m3u8?path=" +
                      UrlEncode(source) + "&protocol=hls&session=" + UrlEncode(sessionId) +
                      "&copyts=1&mediaIndex=0&videoResolution=1080&videoQuality=100&audioBoost=100";
         if (!server.accessToken.empty()) result.uri += "&X-Plex-Token=" + UrlEncode(server.accessToken);

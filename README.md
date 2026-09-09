@@ -51,6 +51,11 @@ Placement is saved to
 Media is played from Plex. AzerothPlex does not download, cache, locally
 transcode, or redistribute media. The world-space screen is client-local.
 
+For Plex `*.plex.direct` connections, login and metadata remain HTTPS, but the
+native media stream uses the server's standard HTTP port to avoid a known
+32-bit libmpv/OpenSSL crash while opening HTTPS media. This fallback is limited
+to Plex direct-host names.
+
 ## Build
 
 The helper is a Win32 C++20 target. The pinned x86 libmpv development package

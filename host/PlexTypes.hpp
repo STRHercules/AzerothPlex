@@ -17,6 +17,7 @@ namespace wxl_plex
     {
         std::string name;
         std::string uri;
+        std::string mediaUri;
         std::string accessToken;
     };
 

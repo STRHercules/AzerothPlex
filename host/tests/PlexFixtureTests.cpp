@@ -22,15 +22,22 @@ int main()
     CHECK(wxl_plex::ParsePinJson(R"({"id":17,"authToken":"authorized"})", authorizedPin));
     CHECK(authorizedPin.authToken == "authorized");
 
-    const std::string resources =
+        const std::string resources =
         R"(<MediaContainer><Device name="Test Plex" accessToken="server-token">
         <Connection protocol="https" address="plex.test" port="32400"
          uri="https://plex.test:32400" local="1" available="1"/>
+        <Connection protocol="http" address="plex.test" port="32400"
+         uri="http://plex.test:32400" local="1" available="1"/>
+        </Device><Device name="Direct Plex" accessToken="direct-token">
+        <Connection protocol="https" address="node.plex.direct" port="32400"
+         uri="https://node.plex.direct:32400" local="1" available="1"/>
         </Device></MediaContainer>)";
     const auto servers = wxl_plex::ParseResourcesXml(resources);
-    CHECK(servers.size() == 1);
+    CHECK(servers.size() == 2);
     CHECK(servers[0].name == "Test Plex");
     CHECK(servers[0].uri == "https://plex.test:32400");
+    CHECK(servers[0].mediaUri == "http://plex.test:32400");
+    CHECK(servers[1].mediaUri == "http://node.plex.direct:32400");
     CHECK(servers[0].accessToken == "server-token");
 
     const std::string sectionsXml =
@@ -66,7 +73,7 @@ int main()
     CHECK(item.streams[1].streamType == 3);
 
     const auto playback = wxl_plex::BuildDirectPlayback(item, servers[0]);
-    CHECK(playback.uri == "https://plex.test:32400/library/parts/7/file?X-Plex-Token=server-token");
+    CHECK(playback.uri == "http://plex.test:32400/library/parts/7/file?X-Plex-Token=server-token");
 
     const auto transcoded = wxl_plex::BuildTranscodePlayback(item, servers[0], "session-1");
     CHECK(transcoded.transcoded);
