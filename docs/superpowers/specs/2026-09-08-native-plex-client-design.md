@@ -52,9 +52,10 @@ then copies it to shared memory before WarcraftXL uploads it into a D3D9
 texture. Native playback removes the browser compositor and PNG/WIC pipeline.
 
 Dear ImGui with a Direct3D 11 backend provides the helper UI. libmpv is loaded
-as the media engine and configured for hardware-accelerated playback where the
-client supports it. Plex API calls use WinHTTP. The existing D3D9 world-screen
-renderer remains the consumer of video frames.
+dynamically as the media engine and uses its software render API to produce the
+fixed 640x360 video frame consumed by both the helper UI and WarcraftXL. Plex
+API calls use WinHTTP. The existing D3D9 world-screen renderer remains the
+consumer of video frames.
 
 ## Components
 
@@ -105,16 +106,18 @@ errors.
 
 ### Frame bridge
 
-The current PNG/WIC capture path is removed. The helper publishes decoded video
-as raw RGBA frames through a versioned double buffer or ring buffer. The first
-implementation targets the existing 640x360 shared frame size and a 30 FPS
+The current PNG/WIC capture path is removed. The helper asks libmpv's software
+render API for a fixed 640x360 BGRA frame, uploads that frame to the native
+Dear ImGui texture, and publishes the same raw pixels through a versioned
+double buffer or ring buffer. The first implementation targets a 30 FPS
 world-screen update rate. The extension copies the active frame into its
 existing D3D9 texture and draws it with the current world projection/depth
 logic.
 
-The helper UI may render at its native window size; the shared world-screen
-output is an independent fixed-size render target. Direct GPU inter-process
-texture sharing is deferred until profiling proves the raw upload path is the
+The helper UI may render at its native window size; the video texture and
+shared world-screen output remain independent fixed-size 640x360 targets.
+Direct GPU inter-process texture sharing and a libmpv OpenGL interop backend
+are deferred until profiling proves the raw software-render path is the
 remaining bottleneck.
 
 ### WarcraftXL extension
@@ -162,7 +165,7 @@ The native client does not own world placement.
 
 ## Build and packaging
 
-- Update the host CMake target for libmpv, Dear ImGui, WinHTTP, D3D11, and the
+- Update the host CMake target for dynamically loaded libmpv, Dear ImGui, WinHTTP, D3D11, and the
   required Windows libraries.
 - Pin or otherwise identify redistributable libmpv and UI sources in the build
   and update `THIRD_PARTY_NOTICES.md`.
@@ -199,7 +202,8 @@ Manual acceptance:
 
 ## Deliberate limits
 
-The first native transport uses a CPU-visible raw frame buffer rather than
-cross-API GPU handles. This removes the known PNG/WIC latency with a small,
-portable ABI. GPU texture sharing is an optimization follow-up only if
-profiling shows the D3D9 upload is still material.
+The first native transport uses libmpv's CPU-visible software render buffer
+and a raw shared frame buffer rather than cross-API GPU handles. This removes
+the known PNG/WIC latency with a small, portable ABI. GPU texture sharing or
+libmpv OpenGL interop is an optimization follow-up only if profiling shows the
+software conversion or D3D9 upload is still material.

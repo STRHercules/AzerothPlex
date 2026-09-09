@@ -1,0 +1,31 @@
+# Build and release output
+build/
+dist/
+extension/build/
+host/build/
+host/third_party/webview2/
+
+# Native compiler output
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+imgui.ini
+
+# Per-client state and WoW installation data
+world-screen.tsv
+world-screen.tsv.bak
+Cache/
+Data/
+Interface/
+Logs/
+Screenshots/
+WTF/
+
+# Editor/system files
+.vs/
+.vscode/
+*.user
+Thumbs.db

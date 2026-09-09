@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `wxl-video-host.exe` as the native helper process. WinHTTP and DPAPI handle Plex authentication/API access, Dear ImGui with Direct3D 11 renders the helper UI, libmpv decodes playback, and a versioned raw-RGBA shared-memory bridge feeds the existing D3D9 WarcraftXL surface. WarcraftXL remains the owner of world placement, size, rotation, depth, persistence, and spatial audio.
 
-**Tech Stack:** C++20, Win32, Direct3D 11 in the helper, Direct3D 9 in WarcraftXL, Dear ImGui, libmpv, WinHTTP, Windows DPAPI, MSXML 6 for Plex XML responses, nlohmann/json for Plex OAuth JSON, CMake, CTest.
+**Tech Stack:** C++20, Win32, Direct3D 11 in the helper, Direct3D 9 in WarcraftXL, Dear ImGui, dynamically loaded libmpv, WinHTTP, Windows DPAPI, MSXML 6 for Plex XML responses, nlohmann/json for Plex OAuth JSON, CMake, CTest.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-native-plex-client-design.md`
 
@@ -18,7 +18,7 @@
 - Support Plex server-side transcoding as fallback; do not locally download, cache, transcode, or redistribute media.
 - Keep the WarcraftXL extension client-local and server-independent.
 - Keep the world screen 16:9; `width_` controls size and height remains `width_ * 9 / 16`.
-- Keep the initial shared output at 640x360 raw RGBA/BGRA with a 30 FPS target; defer cross-API GPU handles until profiling justifies them.
+- Keep the initial libmpv software-render/shared output at 640x360 raw BGRA with a 30 FPS target; defer cross-API GPU handles and OpenGL interop until profiling justifies them.
 - Preserve placement fields, `world-screen.tsv`, spatial audio, device-reset recovery, and parent-process shutdown behavior.
 - Use the smallest dependency surface that supplies native UI and playback; do not add a second UI framework or a custom media decoder.
 
@@ -62,7 +62,7 @@ Modify these existing files:
 
 **Interfaces:**
 - Consumes: an x86 libmpv SDK directory containing `include/mpv/client.h`, an import library, and `libmpv-2.dll`.
-- Produces: a reproducible `wxl-video-host` CMake target with `MPV_ROOT`, `IMGUI_ROOT`, and `NLOHMANN_JSON_ROOT` cache inputs and an `mpv_probe` test executable.
+- Produces: a reproducible `wxl-video-host` CMake target with `MPV_ROOT`, `IMGUI_ROOT`, and `NLOHMANN_JSON_ROOT` cache inputs and an `mpv_probe` test executable. libmpv is loaded at runtime from `libmpv-2.dll`; no MSVC import library is required.
 
 - [ ] **Step 1: Add the failing x86 libmpv probe.**
 
@@ -70,20 +70,28 @@ Modify these existing files:
 
   ```cpp
   #include <mpv/client.h>
+  #include <windows.h>
 
   int main()
   {
-      mpv_handle* handle = mpv_create();
+      HMODULE module = LoadLibraryW(L"libmpv-2.dll");
+      if (!module) return 1;
+      auto create = reinterpret_cast<mpv_handle* (*)()>(GetProcAddress(module, "mpv_create"));
+      auto initialize = reinterpret_cast<int (*)(mpv_handle*)>(GetProcAddress(module, "mpv_initialize"));
+      auto destroy = reinterpret_cast<void (*)(mpv_handle*)>(GetProcAddress(module, "mpv_destroy"));
+      if (!create || !initialize || !destroy) return 2;
+      mpv_handle* handle = create();
       if (!handle) return 1;
-      const int initialized = mpv_initialize(handle);
-      mpv_destroy(handle);
-      return initialized >= 0 ? 0 : 2;
+      const int initialized = initialize(handle);
+      destroy(handle);
+      FreeLibrary(module);
+      return initialized >= 0 ? 0 : 3;
   }
   ```
 
 - [ ] **Step 2: Add and run the probe target before wiring the application.**
 
-  Add `include(CTest)`, an `mpv_probe` executable linked to libmpv, and an `add_test(NAME mpv_probe COMMAND mpv_probe)` entry without changing the existing helper target yet.
+  Add `include(CTest)`, an `mpv_probe` executable linked only to Windows libraries, and an `add_test(NAME mpv_probe COMMAND mpv_probe)` entry without changing the existing helper target yet.
 
   Run:
 
@@ -93,7 +101,7 @@ Modify these existing files:
   rtk ctest --test-dir host/build -C Release -R mpv_probe --output-on-failure
   ```
 
-  Expected: the probe links against the x86 libmpv import library, starts libmpv, and exits with code 0. If the selected package has no x86 import library, build the pinned libmpv source with the existing Win32 toolchain before proceeding; do not substitute a 64-bit DLL into this 32-bit target.
+  Expected: the probe loads the x86 `libmpv-2.dll`, starts libmpv, and exits with code 0. Do not substitute a 64-bit DLL into this 32-bit target.
 
 - [ ] **Step 3: Add the native dependency targets alongside the old host inputs.**
 
@@ -105,7 +113,7 @@ Modify these existing files:
   set(NLOHMANN_JSON_ROOT "${CMAKE_CURRENT_LIST_DIR}/third_party" CACHE PATH "nlohmann/json include root")
   ```
 
-  Add the ImGui core/backend sources, include the libmpv and JSON roots, and link `d3d11`, `dxgi`, `d3dcompiler`, `dwmapi`, `winhttp`, `crypt32`, `ole32`, `oleaut32`, `user32`, `gdi32`, `shell32`, and `shlwapi` alongside the x86 libmpv import library.
+  Add the ImGui core/backend sources, include the libmpv and JSON roots, and link `d3d11`, `dxgi`, `d3dcompiler`, `dwmapi`, `winhttp`, `crypt32`, `ole32`, `oleaut32`, `user32`, `gdi32`, `shell32`, and `shlwapi`. Copy `libmpv-2.dll` from `${MPV_ROOT}` beside the helper after the build.
 
 - [ ] **Step 4: Build the existing host target against the new dependency surface.**
 
@@ -295,7 +303,7 @@ Modify these existing files:
   rtk git commit -m "feat: add native plex api client"
   ```
 
-### Task 4: Add the libmpv D3D11 player
+### Task 4: Add the libmpv software-render player
 
 **Files:**
 - Create: `host/MpvPlayer.hpp`
@@ -304,7 +312,7 @@ Modify these existing files:
 - Modify: `host/tests/MpvProbe.cpp`
 
 **Interfaces:**
-- Consumes: `PlexPlayback` from `PlexClient`, a Win32 helper window, and a D3D11 device/context.
+- Consumes: `PlexPlayback` from `PlexClient` and a native helper tick; the D3D11 device/context remains owned by the UI.
 - Produces: `MpvPlayer::Load`, `Play`, `Pause`, `Stop`, `Seek`, `SetVolume`, `SetAudioTrack`, `SetSubtitleTrack`, `PollEvents`, `Render`, and `CopyFrameTo`.
 
   Use this public shape:
@@ -328,13 +336,18 @@ Modify these existing files:
   };
   ```
 
+  `MpvPlayer` owns the DLL `HMODULE` and a private function table populated by
+  `GetProcAddress`; production code must not link against `libmpv.dll.a`.
+  The render context uses `MPV_RENDER_API_TYPE_SW` with `bgr0` output at
+  640x360; the helper adds opaque alpha before publishing BGRA pixels.
+
   Define `MpvEvent` in `MpvPlayer.hpp` with `Kind` values `Loaded`, `Ended`,
   `Error`, `PositionChanged`, and `TracksChanged`, plus `std::string message`,
   `double positionSeconds`, and `int errorCode` fields.
 
 - [ ] **Step 1: Extend the probe to initialize, set a property, and destroy libmpv.**
 
-  The probe must call `mpv_set_option_string(handle, "vo", "libmpv")`, initialize, read `mpv_get_property_string(handle, "mpv_version")`, free the returned string with `mpv_free`, and destroy the handle.
+  The probe must call `LoadLibraryW(L"libmpv-2.dll")`, resolve `mpv_create`, `mpv_initialize`, `mpv_get_property_string`, `mpv_free`, and `mpv_destroy` with `GetProcAddress`, call `mpv_set_option_string(handle, "vo", "libmpv")`, initialize, read `mpv_version`, free the returned string, and destroy the handle.
 
 - [ ] **Step 2: Run the probe and record the x86 result.**
 
@@ -345,17 +358,17 @@ Modify these existing files:
 
   Expected: PASS with the pinned x86 libmpv DLL discoverable beside the executable.
 
-- [ ] **Step 3: Create the D3D11 render targets.**
+- [ ] **Step 3: Create the libmpv software render target.**
 
-  Allocate a libmpv render target for the helper window and a 640x360 BGRA render target for the world bridge. Allocate one staging texture with `D3D11_CPU_ACCESS_READ`. Use `CopyResource` and `Map` only when a new decoded frame is available; do not read back every UI frame without a new mpv frame.
+  Create the libmpv render context with `MPV_RENDER_API_TYPE_SW`, render into a 64-byte-aligned 640x360 `bgr0` buffer, and let `NativeUi` upload the opaque BGRA copy to its D3D11 texture. Do not assume the pinned i686 libmpv package has a D3D11 render backend.
 
 - [ ] **Step 4: Implement playback commands and properties.**
 
   Send `loadfile`, `set pause`, `stop`, `seek`, `set volume`, `set aid`, and `set sid` through libmpv. Poll `MPV_EVENT_FILE_LOADED`, `MPV_EVENT_END_FILE`, `MPV_EVENT_PROPERTY_CHANGE`, and `MPV_EVENT_LOG_MESSAGE`. Convert end/error events into typed `MpvEvent` values consumed by the UI and Plex timeline layer.
 
-- [ ] **Step 5: Implement D3D11 render and raw-frame copy.**
+- [ ] **Step 5: Implement software render and raw-frame copy.**
 
-  `Render()` updates the libmpv render context and presents the helper's swap chain. `CopyFrameTo()` maps the staging texture and copies rows into the frame publisher's fixed BGRA buffer. Return false when no new frame exists or when the staging readback fails; do not publish stale partial data.
+  `Render()` calls `mpv_render_context_update` and `mpv_render_context_render` when `MPV_RENDER_UPDATE_FRAME` is set. `CopyFrameTo()` converts `bgr0` to opaque BGRA rows for the frame publisher and native UI. Return false when no frame exists; do not publish stale partial data.
 
 - [ ] **Step 6: Add the native player smoke test.**
 

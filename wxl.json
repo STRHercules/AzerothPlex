@@ -1,0 +1,27 @@
+{
+  "manifest": 1,
+  "extension": {
+    "id": "wxl-video-screen",
+    "version": "0.5.0",
+    "abi": "1.1",
+    "entry": "wxl-video-screen.dll",
+    "assets": ["wxl-video-host.exe", "libmpv-2.dll"],
+    "requires": {},
+    "conflicts": [],
+    "hooks": []
+  },
+  "deploy": {
+    "mode": "release",
+    "match": "wxl-video-screen-*.zip"
+  },
+  "listing": {
+    "title": "Plex Cinema",
+    "tagline": "Browse Plex and place native playback on a movable world-space screen.",
+    "description": "README.md",
+    "gallery": [],
+    "categories": ["tools", "media"],
+    "accent": "#e5a00d"
+  },
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}
