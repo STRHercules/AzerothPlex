@@ -1,10 +1,10 @@
 #include "../MpvPlayer.hpp"
 
-#include <cassert>
+#define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
 
 int main()
 {
     wxl_mpv::MpvPlayer player;
-    assert(!player.Initialize(nullptr, nullptr, nullptr));
+    CHECK(!player.Initialize(nullptr, nullptr, nullptr));
     return 0;
 }

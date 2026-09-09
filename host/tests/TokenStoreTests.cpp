@@ -1,7 +1,8 @@
 #include "../TokenStore.hpp"
 
-#include <cassert>
 #include <filesystem>
+
+#define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
 
 int main()
 {
@@ -9,11 +10,11 @@ int main()
     std::filesystem::remove_all(directory);
 
     wxl_token::TokenStore store(directory);
-    assert(store.Load().empty());
-    assert(store.Save("plex-token"));
-    assert(store.Load() == "plex-token");
-    assert(store.Clear());
-    assert(store.Load().empty());
+    CHECK(store.Load().empty());
+    CHECK(store.Save("plex-token"));
+    CHECK(store.Load() == "plex-token");
+    CHECK(store.Clear());
+    CHECK(store.Load().empty());
     std::filesystem::remove_all(directory);
     return 0;
 }

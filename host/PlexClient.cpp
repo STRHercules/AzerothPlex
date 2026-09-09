@@ -246,7 +246,7 @@ namespace wxl_plex
             result.id = object.value("id", 0);
             result.code = object.value("code", std::string{});
             result.authToken = object.value("authToken", std::string{});
-            return result.id > 0 && !result.code.empty();
+            return result.id > 0 && (!result.code.empty() || !result.authToken.empty());
         }
         catch (const nlohmann::json::exception&)
         {

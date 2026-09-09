@@ -1,17 +1,22 @@
 #include "../PlexClient.hpp"
 
-#include <cassert>
 #include <string>
 #include <vector>
+
+#define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
 
 int main()
 {
     wxl_plex::PinAuth pin{};
-    assert(wxl_plex::ParsePinJson(
+    CHECK(wxl_plex::ParsePinJson(
         R"({"id":17,"code":"ABCD","authToken":"token-value"})", pin));
-    assert(pin.id == 17);
-    assert(pin.code == "ABCD");
-    assert(pin.authToken == "token-value");
+    CHECK(pin.id == 17);
+    CHECK(pin.code == "ABCD");
+    CHECK(pin.authToken == "token-value");
+
+    wxl_plex::PinAuth authorizedPin{};
+    CHECK(wxl_plex::ParsePinJson(R"({"id":17,"authToken":"authorized"})", authorizedPin));
+    CHECK(authorizedPin.authToken == "authorized");
 
     const std::string resources =
         R"(<MediaContainer><Device name="Test Plex" accessToken="server-token">
@@ -19,27 +24,27 @@ int main()
          uri="https://plex.test:32400" local="1" available="1"/>
         </Device></MediaContainer>)";
     const auto servers = wxl_plex::ParseResourcesXml(resources);
-    assert(servers.size() == 1);
-    assert(servers[0].name == "Test Plex");
-    assert(servers[0].uri == "https://plex.test:32400");
-    assert(servers[0].accessToken == "server-token");
+    CHECK(servers.size() == 1);
+    CHECK(servers[0].name == "Test Plex");
+    CHECK(servers[0].uri == "https://plex.test:32400");
+    CHECK(servers[0].accessToken == "server-token");
 
     const std::string sectionsXml =
         R"(<MediaContainer><Directory key="1" title="Movies" type="movie"/>
         <Directory key="2" title="Shows" type="show"/></MediaContainer>)";
     const auto sections = wxl_plex::ParseSectionsXml(sectionsXml);
-    assert(sections.size() == 2);
-    assert(sections[0].key == "1");
-    assert(sections[1].type == "show");
+    CHECK(sections.size() == 2);
+    CHECK(sections[0].key == "1");
+    CHECK(sections[1].type == "show");
 
     const std::string itemsXml =
         R"(<MediaContainer><Video ratingKey="8" title="Episode One" type="episode"
         grandparentTitle="Test Show" viewOffset="0" duration="60000"/>
         <Video ratingKey="9" title="Episode Two" type="episode"/></MediaContainer>)";
     const auto items = wxl_plex::ParseItemsXml(itemsXml);
-    assert(items.size() == 2);
-    assert(items[0].title == "Episode One");
-    assert(items[0].grandparentTitle == "Test Show");
+    CHECK(items.size() == 2);
+    CHECK(items[0].title == "Episode One");
+    CHECK(items[0].grandparentTitle == "Test Show");
 
     const std::string metadata =
         R"(<MediaContainer><Video ratingKey="7" title="Test Movie" type="movie"
@@ -48,25 +53,25 @@ int main()
         language="English" title="Stereo"/><Stream streamType="3" id="12"
         language="English" title="Subtitles"/></Part></Media></Video></MediaContainer>)";
     const auto item = wxl_plex::ParseMetadataXml(metadata);
-    assert(item.ratingKey == "7");
-    assert(item.title == "Test Movie");
-    assert(item.viewOffsetMs == 42000);
-    assert(item.partKey == "/library/parts/7/file");
-    assert(item.streams.size() == 2);
-    assert(item.streams[0].id == 11);
-    assert(item.streams[1].streamType == 3);
+    CHECK(item.ratingKey == "7");
+    CHECK(item.title == "Test Movie");
+    CHECK(item.viewOffsetMs == 42000);
+    CHECK(item.partKey == "/library/parts/7/file");
+    CHECK(item.streams.size() == 2);
+    CHECK(item.streams[0].id == 11);
+    CHECK(item.streams[1].streamType == 3);
 
     const auto playback = wxl_plex::BuildDirectPlayback(item, servers[0]);
-    assert(playback.uri == "https://plex.test:32400/library/parts/7/file?X-Plex-Token=server-token");
+    CHECK(playback.uri == "https://plex.test:32400/library/parts/7/file?X-Plex-Token=server-token");
 
     const auto transcoded = wxl_plex::BuildTranscodePlayback(item, servers[0], "session-1");
-    assert(transcoded.transcoded);
-    assert(transcoded.uri.find("/video/:/transcode/universal/start.m3u8") != std::string::npos);
-    assert(transcoded.uri.find("session=session-1") != std::string::npos);
+    CHECK(transcoded.transcoded);
+    CHECK(transcoded.uri.find("/video/:/transcode/universal/start.m3u8") != std::string::npos);
+    CHECK(transcoded.uri.find("session=session-1") != std::string::npos);
 
     const auto timeline = wxl_plex::BuildTimelineRequest(
         item, wxl_plex::TimelineState::Paused, 42000);
-    assert(timeline.find("state=paused") != std::string::npos);
-    assert(timeline.find("time=42000") != std::string::npos);
+    CHECK(timeline.find("state=paused") != std::string::npos);
+    CHECK(timeline.find("time=42000") != std::string::npos);
     return 0;
 }

@@ -1,6 +1,6 @@
 #include "../NativeUi.hpp"
 
-#include <cassert>
+#define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
 
 int main()
 {
@@ -8,12 +8,12 @@ int main()
 
     wxl_plex::PlexEvent login{wxl_plex::PlexEvent::Kind::LoginSucceeded};
     state.Apply(login);
-    assert(state.view == wxl_ui::View::Home);
+    CHECK(state.view == wxl_ui::View::Home);
 
     wxl_plex::PlexEvent error{wxl_plex::PlexEvent::Kind::Error};
     error.message = "stream failed";
     state.Apply(error);
-    assert(state.view == wxl_ui::View::Player);
-    assert(state.error == "stream failed");
+    CHECK(state.view == wxl_ui::View::Player);
+    CHECK(state.error == "stream failed");
     return 0;
 }
