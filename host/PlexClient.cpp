@@ -147,6 +147,7 @@ namespace wxl_plex
         struct HttpResponse
         {
             DWORD status = 0;
+            DWORD error = ERROR_SUCCESS;
             std::string body;
         };
 
@@ -155,7 +156,7 @@ namespace wxl_plex
                              std::string_view body = {})
         {
             const std::wstring wideUrl = Wide(url);
-            if (wideUrl.empty()) return {};
+            if (wideUrl.empty()) return {0, ERROR_INVALID_PARAMETER, {}};
 
             URL_COMPONENTS components{sizeof(components)};
             wchar_t host[256]{};
@@ -166,18 +167,20 @@ namespace wxl_plex
             components.dwUrlPathLength = static_cast<DWORD>(std::size(path));
             if (!WinHttpCrackUrl(wideUrl.c_str(), static_cast<DWORD>(wideUrl.size()), 0,
                                  &components))
-                return {};
+            {
+                return {0, GetLastError(), {}};
+            }
 
             HINTERNET session = WinHttpOpen(L"AzerothPlex/0.5.0",
                                              WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-            if (!session) return {};
+            if (!session) return {0, GetLastError(), {}};
             WinHttpSetTimeouts(session, 10000, 10000, 10000, 30000);
             HINTERNET connection = WinHttpConnect(session, host, components.nPort, 0);
             if (!connection)
             {
                 WinHttpCloseHandle(session);
-                return {};
+                return {0, GetLastError(), {}};
             }
             const DWORD flags = components.nScheme == INTERNET_SCHEME_HTTPS
                 ? WINHTTP_FLAG_SECURE : 0;
@@ -188,7 +191,7 @@ namespace wxl_plex
             {
                 WinHttpCloseHandle(connection);
                 WinHttpCloseHandle(session);
-                return {};
+                return {0, GetLastError(), {}};
             }
 
             std::wstring headers = L"Accept: application/json, application/xml\r\n";
@@ -225,6 +228,7 @@ namespace wxl_plex
                     if (read == 0) break;
                 }
             }
+            else response.error = GetLastError();
             WinHttpCloseHandle(request);
             WinHttpCloseHandle(connection);
             WinHttpCloseHandle(session);
@@ -244,8 +248,10 @@ namespace wxl_plex
         {
             const auto object = nlohmann::json::parse(text.begin(), text.end());
             result.id = object.value("id", 0);
-            result.code = object.value("code", std::string{});
-            result.authToken = object.value("authToken", std::string{});
+            result.code = object.contains("code") && object["code"].is_string()
+                ? object["code"].get<std::string>() : std::string{};
+            result.authToken = object.contains("authToken") && object["authToken"].is_string()
+                ? object["authToken"].get<std::string>() : std::string{};
             return result.id > 0 && (!result.code.empty() || !result.authToken.empty());
         }
         catch (const nlohmann::json::exception&)
@@ -464,7 +470,9 @@ namespace wxl_plex
             if (response.status < 200 || response.status >= 300 ||
                 !ParsePinJson(response.body, pin))
             {
-                Emit({PlexEvent::Kind::Error, "Plex login PIN creation failed"});
+                Emit({PlexEvent::Kind::Error,
+                      "Plex login PIN creation failed (HTTP " + std::to_string(response.status) +
+                      ", WinHTTP " + std::to_string(response.error) + ")"});
                 return;
             }
 

@@ -7,6 +7,9 @@
 #include "NativeUi.hpp"
 #include "PlexClient.hpp"
 #include "VideoShared.hpp"
+#include "backends/imgui_impl_win32.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 #include <windows.h>
 #include <d3d11.h>
@@ -228,6 +231,9 @@ namespace
 
     LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
+        if (ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam))
+            return 1;
+
         switch (message)
         {
         case WM_SIZE:

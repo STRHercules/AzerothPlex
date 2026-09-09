@@ -14,6 +14,10 @@ int main()
     CHECK(pin.code == "ABCD");
     CHECK(pin.authToken == "token-value");
 
+    wxl_plex::PinAuth pendingPin{};
+    CHECK(wxl_plex::ParsePinJson(R"({"id":17,"code":"ABCD","authToken":null})", pendingPin));
+    CHECK(pendingPin.code == "ABCD");
+
     wxl_plex::PinAuth authorizedPin{};
     CHECK(wxl_plex::ParsePinJson(R"({"id":17,"authToken":"authorized"})", authorizedPin));
     CHECK(authorizedPin.authToken == "authorized");
