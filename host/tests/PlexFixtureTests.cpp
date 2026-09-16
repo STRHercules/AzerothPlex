@@ -57,6 +57,39 @@ int main()
     CHECK(items[0].title == "Episode One");
     CHECK(items[0].grandparentTitle == "Test Show");
 
+    const std::string tvHierarchyXml =
+        R"(<MediaContainer><Directory ratingKey="70" title="Test Show" type="show"
+        guid="plex://show/test" thumb="/library/metadata/70/thumb"/>
+        <Directory ratingKey="71" title="Season 1" type="season"/>
+        <Video ratingKey="72" title="Episode One" type="episode"/></MediaContainer>)";
+    const auto hierarchy = wxl_plex::ParseItemsXml(tvHierarchyXml);
+    CHECK(hierarchy.size() == 3);
+    CHECK(hierarchy[0].type == "show");
+    CHECK(hierarchy[0].guid == "plex://show/test");
+    CHECK(hierarchy[1].type == "season");
+    CHECK(hierarchy[2].type == "episode");
+
+    const auto otherLibraries = wxl_plex::ParseItemsXml(
+        R"(<MediaContainer><Directory ratingKey="80" title="Artists" type="artist"/>
+        <Track ratingKey="81" title="Track One" type="track"/>
+        <Photo ratingKey="82" title="Photo One" type="photo"/>
+        <Playlist ratingKey="83" title="Mix" type="playlist"/></MediaContainer>)");
+    CHECK(otherLibraries.size() == 4);
+    CHECK(otherLibraries[0].type == "artist");
+    CHECK(otherLibraries[1].type == "track");
+    CHECK(otherLibraries[2].type == "photo");
+    CHECK(otherLibraries[3].type == "playlist");
+    CHECK(wxl_plex::BuildChildrenPath("70") == "/library/metadata/70/children");
+    CHECK(wxl_plex::BuildWatchlistPath() ==
+          "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1");
+    const auto page = wxl_plex::ParseItemsPageXml(
+        R"(<MediaContainer offset="48" size="48" totalSize="120">
+        <Video ratingKey="73" title="Page Two" type="movie"/></MediaContainer>)");
+    CHECK(page.offset == 48);
+    CHECK(page.size == 48);
+    CHECK(page.totalSize == 120);
+    CHECK(page.items.size() == 1);
+
     const std::string metadata =
         R"(<MediaContainer><Video ratingKey="7" title="Test Movie" type="movie"
         viewOffset="42000" duration="120000"><Media videoResolution="1080">

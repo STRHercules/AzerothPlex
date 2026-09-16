@@ -102,6 +102,7 @@ namespace wxl_plex
         {
             PlexItem result;
             result.ratingKey = Attribute(tag, "ratingKey");
+            result.guid = Attribute(tag, "guid");
             result.title = Attribute(tag, "title");
             result.type = Attribute(tag, "type");
             result.grandparentTitle = Attribute(tag, "grandparentTitle");
@@ -109,6 +110,31 @@ namespace wxl_plex
             result.viewOffsetMs = IntegerAttribute(tag, "viewOffset");
             result.durationMs = IntegerAttribute(tag, "duration");
             result.viewed = IntegerAttribute(tag, "viewCount") > 0;
+            return result;
+        }
+
+        bool IsTagBoundary(char value)
+        {
+            return value == '>' || value == '/' ||
+                   std::isspace(static_cast<unsigned char>(value));
+        }
+
+        size_t FindItemStart(std::string_view xml, size_t cursor)
+        {
+            constexpr std::string_view tags[] = {
+                "<Video", "<Directory", "<Track", "<Photo", "<Playlist"};
+            size_t result = std::string_view::npos;
+            for (const auto tag : tags)
+            {
+                size_t candidate = xml.find(tag, cursor);
+                while (candidate != std::string_view::npos &&
+                       candidate + tag.size() < xml.size() &&
+                       !IsTagBoundary(xml[candidate + tag.size()]))
+                    candidate = xml.find(tag, candidate + tag.size());
+                if (candidate != std::string_view::npos &&
+                    (result == std::string_view::npos || candidate < result))
+                    result = candidate;
+            }
             return result;
         }
 
@@ -153,7 +179,8 @@ namespace wxl_plex
 
         HttpResponse Request(std::string_view url, std::wstring_view method,
                              std::string_view token, std::string_view clientId,
-                             bool jsonResponse = false, std::string_view body = {})
+                             bool jsonResponse = false, std::string_view body = {},
+                             int containerStart = -1, int containerSize = -1)
         {
             const std::wstring wideUrl = Wide(url);
             if (wideUrl.empty()) return {0, ERROR_INVALID_PARAMETER, {}};
@@ -200,6 +227,12 @@ namespace wxl_plex
             headers += L"X-Plex-Client-Identifier: " + Wide(clientId) + L"\r\n";
             headers += L"X-Plex-Product: AzerothPlex\r\nX-Plex-Version: 0.5.0\r\n";
             headers += L"X-Plex-Platform: Windows\r\nX-Plex-Device: WarcraftXL\r\n";
+            if (containerStart >= 0)
+                headers += L"X-Plex-Container-Start: " +
+                           std::to_wstring(containerStart) + L"\r\n";
+            if (containerSize > 0)
+                headers += L"X-Plex-Container-Size: " +
+                           std::to_wstring(containerSize) + L"\r\n";
             if (!token.empty()) headers += L"X-Plex-Token: " + Wide(token) + L"\r\n";
             WinHttpAddRequestHeaders(request, headers.c_str(), -1L,
                                      WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
@@ -242,6 +275,7 @@ namespace wxl_plex
             return server.uri + (path.empty() || path.front() == '/' ? std::string(path)
                                                                        : "/" + std::string(path));
         }
+
     }
 
     bool ParsePinJson(std::string_view text, PinAuth& result)
@@ -341,7 +375,7 @@ namespace wxl_plex
     {
         std::vector<PlexItem> result;
         size_t cursor = 0;
-        while ((cursor = xml.find("<Video", cursor)) != std::string_view::npos)
+        while ((cursor = FindItemStart(xml, cursor)) != std::string_view::npos)
         {
             const size_t end = xml.find('>', cursor);
             if (end == std::string_view::npos) break;
@@ -351,10 +385,32 @@ namespace wxl_plex
         return result;
     }
 
+    PlexPage ParseItemsPageXml(std::string_view xml)
+    {
+        PlexPage result;
+        const size_t containerStart = xml.find("<MediaContainer");
+        if (containerStart != std::string_view::npos)
+        {
+            const size_t containerEnd = xml.find('>', containerStart);
+            if (containerEnd != std::string_view::npos)
+            {
+                const std::string_view tag = xml.substr(containerStart,
+                                                         containerEnd - containerStart);
+                result.offset = std::max(0, IntegerAttribute(tag, "offset"));
+                result.size = std::max(0, IntegerAttribute(tag, "size"));
+                result.totalSize = std::max(0, IntegerAttribute(tag, "totalSize"));
+            }
+        }
+        result.items = ParseItemsXml(xml);
+        if (result.size == 0) result.size = static_cast<int>(result.items.size());
+        if (result.totalSize == 0) result.totalSize = result.offset + result.size;
+        return result;
+    }
+
     PlexItem ParseMetadataXml(std::string_view xml)
     {
         PlexItem result;
-        const size_t start = xml.find("<Video");
+        const size_t start = FindItemStart(xml, 0);
         if (start == std::string_view::npos) return result;
         const size_t tagEnd = xml.find('>', start);
         if (tagEnd == std::string_view::npos) return result;
@@ -384,6 +440,16 @@ namespace wxl_plex
             }
         }
         return result;
+    }
+
+    std::string BuildChildrenPath(std::string_view ratingKey)
+    {
+        return "/library/metadata/" + std::string(ratingKey) + "/children";
+    }
+
+    std::string BuildWatchlistPath()
+    {
+        return "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1";
     }
 
     PlexPlayback BuildDirectPlayback(const PlexItem& item, const PlexServer& server)
@@ -438,7 +504,11 @@ namespace wxl_plex
         Enqueue([this](std::stop_token) {
             Emit({token_.empty() ? PlexEvent::Kind::LoginRequired
                                  : PlexEvent::Kind::LoginSucceeded, {}, {}, {}, {}, {}});
-            if (!token_.empty()) LoadResources();
+            if (!token_.empty())
+            {
+                LoadResources();
+                LoadWatchlist();
+            }
         });
     }
 
@@ -523,6 +593,7 @@ namespace wxl_plex
                 }
                 Emit({PlexEvent::Kind::LoginSucceeded, "Plex login complete"});
                 LoadResources();
+                LoadWatchlist();
                 return;
             }
         }
@@ -553,6 +624,36 @@ namespace wxl_plex
         });
     }
 
+    void PlexClient::LoadWatchlist(int offset, int size)
+    {
+        Enqueue([this, offset, size](std::stop_token stop) {
+            if (stop.stop_requested()) return;
+            PlexEvent event{PlexEvent::Kind::Watchlist};
+            if (token_.empty())
+            {
+                event.message = "Sign in to load the Plex watchlist.";
+                Emit(std::move(event));
+                return;
+            }
+
+            const HttpResponse response = Request(
+                "https://discover.provider.plex.tv" + BuildWatchlistPath(), L"GET",
+                token_, clientId_, false, {}, offset, size);
+            if (response.status < 200 || response.status >= 300)
+            {
+                event.message = "Plex watchlist could not be loaded.";
+                Emit(std::move(event));
+                return;
+            }
+            const PlexPage page = ParseItemsPageXml(response.body);
+            event.items = page.items;
+            event.pageOffset = page.offset;
+            event.pageSize = page.size;
+            event.pageTotalSize = page.totalSize;
+            Emit(std::move(event));
+        });
+    }
+
     void PlexClient::LoadSections(const PlexServer& server)
     {
         Enqueue([this, server](std::stop_token) {
@@ -562,7 +663,8 @@ namespace wxl_plex
             const auto sections = ParseSectionsXml(response.body);
             if (response.status < 200 || response.status >= 300 || sections.empty())
             {
-                Emit({PlexEvent::Kind::Error, "Plex libraries could not be loaded"});
+                Emit({PlexEvent::Kind::Error, "Plex libraries could not be loaded",
+                      {}, {}, {}, {}, true});
                 return;
             }
             PlexEvent event{PlexEvent::Kind::Sections};
@@ -571,38 +673,100 @@ namespace wxl_plex
         });
     }
 
-    void PlexClient::LoadItems(const PlexServer& server, const PlexSection& section)
+    void PlexClient::LoadItems(const PlexServer& server, const PlexSection& section,
+                               int offset, int size)
     {
-        Enqueue([this, server, section](std::stop_token) {
-            const HttpResponse response = Request(JoinUrl(server, "/library/sections/" + section.key + "/all"),
-                                                  L"GET", server.accessToken.empty() ? token_ : server.accessToken,
-                                                  clientId_);
-            const auto items = ParseItemsXml(response.body);
+        Enqueue([this, server, section, offset, size](std::stop_token) {
+            const HttpResponse response = Request(
+                JoinUrl(server, "/library/sections/" + section.key + "/all"), L"GET",
+                server.accessToken.empty() ? token_ : server.accessToken, clientId_,
+                false, {}, offset, size);
+            const PlexPage page = ParseItemsPageXml(response.body);
             if (response.status < 200 || response.status >= 300)
             {
-                Emit({PlexEvent::Kind::Error, "Plex library items could not be loaded"});
+                Emit({PlexEvent::Kind::Error, "Plex library items could not be loaded",
+                      {}, {}, {}, {}, true});
                 return;
             }
             PlexEvent event{PlexEvent::Kind::Items};
-            event.items = items;
+            event.items = page.items;
+            event.pageOffset = page.offset;
+            event.pageSize = page.size;
+            event.pageTotalSize = page.totalSize;
             Emit(std::move(event));
         });
     }
 
-    void PlexClient::Search(const PlexServer& server, std::string query)
+    void PlexClient::LoadChildren(const PlexServer& server, const PlexItem& item,
+                                  int offset, int size)
     {
-        Enqueue([this, server, query = std::move(query)](std::stop_token) {
+        Enqueue([this, server, item, offset, size](std::stop_token) {
+            const std::string token = server.accessToken.empty() ? token_ : server.accessToken;
             const HttpResponse response = Request(
-                JoinUrl(server, "/hubs/search?query=" + UrlEncode(query)), L"GET",
-                server.accessToken.empty() ? token_ : server.accessToken, clientId_);
-            const auto items = ParseItemsXml(response.body);
+                JoinUrl(server, BuildChildrenPath(item.ratingKey)), L"GET", token, clientId_,
+                false, {}, offset, size);
+            const PlexPage page = ParseItemsPageXml(response.body);
             if (response.status < 200 || response.status >= 300)
             {
-                Emit({PlexEvent::Kind::Error, "Plex search failed"});
+                Emit({PlexEvent::Kind::Error, "Plex child items could not be loaded", {}, {}, {}, {}, true});
+                return;
+            }
+            PlexEvent event{PlexEvent::Kind::Children};
+            event.items = page.items;
+            event.pageOffset = page.offset;
+            event.pageSize = page.size;
+            event.pageTotalSize = page.totalSize;
+            Emit(std::move(event));
+        });
+    }
+
+    void PlexClient::ResolveWatchlistItem(const PlexServer& server, const PlexItem& item)
+    {
+        Enqueue([this, server, item](std::stop_token) {
+            if (item.guid.empty())
+            {
+                Emit({PlexEvent::Kind::Error, "This watchlist item has no server match", {}, {}, {}, {}, true});
+                return;
+            }
+
+            const std::string token = server.accessToken.empty() ? token_ : server.accessToken;
+            const HttpResponse response = Request(
+                JoinUrl(server, "/library/all?guid=" + UrlEncode(item.guid)),
+                L"GET", token, clientId_);
+            const auto matches = ParseItemsXml(response.body);
+            if (response.status < 200 || response.status >= 300 || matches.empty())
+            {
+                Emit({PlexEvent::Kind::Error,
+                      "The watchlist item is not available on the selected Plex server",
+                      {}, {}, {}, {}, true});
+                return;
+            }
+            PlexEvent event{PlexEvent::Kind::WatchlistResolved};
+            event.item = matches.front();
+            Emit(std::move(event));
+        });
+    }
+
+    void PlexClient::Search(const PlexServer& server, std::string query,
+                            int offset, int size)
+    {
+        Enqueue([this, server, query = std::move(query), offset, size](std::stop_token) {
+            const HttpResponse response = Request(
+                JoinUrl(server, "/hubs/search?query=" + UrlEncode(query)), L"GET",
+                server.accessToken.empty() ? token_ : server.accessToken, clientId_,
+                false, {}, offset, size);
+            const PlexPage page = ParseItemsPageXml(response.body);
+            if (response.status < 200 || response.status >= 300)
+            {
+                Emit({PlexEvent::Kind::Error, "Plex search failed",
+                      {}, {}, {}, {}, true});
                 return;
             }
             PlexEvent event{PlexEvent::Kind::Items};
-            event.items = items;
+            event.items = page.items;
+            event.pageOffset = page.offset;
+            event.pageSize = page.size;
+            event.pageTotalSize = page.totalSize;
             Emit(std::move(event));
         });
     }
@@ -615,7 +779,8 @@ namespace wxl_plex
                 server.accessToken.empty() ? token_ : server.accessToken, clientId_);
             if (response.status < 200 || response.status >= 300)
             {
-                Emit({PlexEvent::Kind::Error, "Plex metadata could not be loaded"});
+                Emit({PlexEvent::Kind::Error, "Plex metadata could not be loaded",
+                      {}, {}, {}, {}, true});
                 return;
             }
             PlexEvent event{PlexEvent::Kind::Metadata};

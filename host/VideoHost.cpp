@@ -31,16 +31,16 @@ namespace
     constexpr wchar_t kWindowTitle[] = L"AzerothPlex";
     constexpr UINT_PTR kTickTimer = 1;
     constexpr UINT kTickIntervalMs = 16;
-    constexpr UINT kShowHostMessage = WM_APP + 0x45;
-    constexpr UINT kHideHostMessage = WM_APP + 0x46;
 
     HWND g_window = nullptr;
     HANDLE g_controlMapping = nullptr;
     void* g_controlView = nullptr;
+    HANDLE g_uiMapping = nullptr;
+    void* g_uiView = nullptr;
     HANDLE g_parentProcess = nullptr;
-    bool g_background = false;
     LONG g_lastCommandSequence = 0;
     LONG g_lastVolumeSequence = 0;
+    LONG g_lastUiCommandSequence = 0;
 
     ComPtr<ID3D11Device> g_device;
     ComPtr<ID3D11DeviceContext> g_context;
@@ -117,6 +117,90 @@ namespace
         }
     }
 
+    wxl_video_shared::UiBridge* SharedUi()
+    {
+        return static_cast<wxl_video_shared::UiBridge*>(g_uiView);
+    }
+
+    bool InitializeUiBridge()
+    {
+        g_uiMapping = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+            static_cast<DWORD>(sizeof(wxl_video_shared::UiBridge)),
+            wxl_video_shared::kUiMappingName);
+        if (!g_uiMapping) return false;
+        const bool created = GetLastError() != ERROR_ALREADY_EXISTS;
+        g_uiView = MapViewOfFile(g_uiMapping, FILE_MAP_ALL_ACCESS, 0, 0,
+                                 sizeof(wxl_video_shared::UiBridge));
+        if (!g_uiView) return false;
+
+        auto* bridge = SharedUi();
+        if (!created && (bridge->magic != wxl_video_shared::kUiMagic ||
+                         bridge->version != wxl_video_shared::kUiVersion ||
+                         bridge->structBytes != sizeof(*bridge)))
+            return false;
+
+        if (created)
+        {
+            std::memset(bridge, 0, sizeof(*bridge));
+            bridge->magic = wxl_video_shared::kUiMagic;
+            bridge->version = wxl_video_shared::kUiVersion;
+            bridge->structBytes = sizeof(*bridge);
+            bridge->slots[0].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+            bridge->slots[1].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+        }
+        return bridge->magic == wxl_video_shared::kUiMagic &&
+               bridge->version == wxl_video_shared::kUiVersion &&
+               bridge->structBytes == sizeof(*bridge);
+    }
+
+    void ShutdownUiBridge()
+    {
+        if (g_uiView)
+        {
+            UnmapViewOfFile(g_uiView);
+            g_uiView = nullptr;
+        }
+        if (g_uiMapping)
+        {
+            CloseHandle(g_uiMapping);
+            g_uiMapping = nullptr;
+        }
+    }
+
+    void ProcessUiCommand()
+    {
+        auto* bridge = SharedUi();
+        if (!bridge) return;
+
+        const LONG sequence = bridge->commandSequence;
+        if (sequence <= 0 || sequence == g_lastUiCommandSequence) return;
+        MemoryBarrier();
+        wxl_video_shared::UiCommandPacket command{};
+        std::memcpy(&command, &bridge->command, sizeof(command));
+        MemoryBarrier();
+        if (bridge->commandSequence != sequence) return;
+        g_ui.HandleUiCommand(command);
+        g_lastUiCommandSequence = sequence;
+    }
+
+    void PublishUiState()
+    {
+        auto* bridge = SharedUi();
+        if (!bridge) return;
+
+        const LONG active = bridge->activeIndex;
+        const LONG next = active == 0 ? 1 : 0;
+        std::memset(&bridge->slots[next], 0, sizeof(bridge->slots[next]));
+        g_ui.PublishUiState(bridge->slots[next]);
+        LONG sequence = bridge->sequence + 1;
+        if (sequence <= 0) sequence = 1;
+        MemoryBarrier();
+        InterlockedExchange(&bridge->slotSequence[next], sequence);
+        InterlockedExchange(&bridge->activeIndex, next);
+        InterlockedExchange(&bridge->sequence, sequence);
+    }
+
     void ProcessControls()
     {
         auto* control = SharedControl();
@@ -132,8 +216,9 @@ namespace
             {
                 switch (static_cast<wxl_video_shared::Command>(command))
                 {
-                case wxl_video_shared::Command::Show: g_ui.Show(); break;
-                case wxl_video_shared::Command::Hide: g_ui.Hide(); break;
+                case wxl_video_shared::Command::Show:
+                case wxl_video_shared::Command::Hide:
+                    break;
                 case wxl_video_shared::Command::Play: g_player.Play(); break;
                 case wxl_video_shared::Command::Pause: g_player.Pause(); break;
                 case wxl_video_shared::Command::Stop: g_player.Stop(); break;
@@ -214,12 +299,15 @@ namespace
         std::vector<wxl_mpv::MpvEvent> events;
         g_player.PollEvents(events);
         g_ui.HandleMpvEvents(events);
+        g_ui.PumpPlexEvents();
+        ProcessUiCommand();
         g_player.Render();
         if (g_player.CopyFrameTo(g_frame.data(), wxl_video_shared::kStride))
         {
             g_frames.Publish(g_frame, wxl_video_shared::kStride);
             g_ui.SetFrame(g_frame.data(), wxl_video_shared::kStride);
         }
+        PublishUiState();
 
         if (!g_ui.IsVisible() || !g_renderTarget) return;
         const float clear[4] = {0.025f, 0.025f, 0.035f, 1.0f};
@@ -243,12 +331,6 @@ namespace
         case WM_TIMER:
             if (wParam == kTickTimer) RenderFrame();
             return 0;
-        case kShowHostMessage:
-            g_ui.Show();
-            return 0;
-        case kHideHostMessage:
-            g_ui.Hide();
-            return 0;
         case WM_CLOSE:
             DestroyWindow(window);
             return 0;
@@ -262,10 +344,9 @@ namespace
     }
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand)
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
-    g_background = commandLine && std::wcsstr(commandLine, L"--background") != nullptr;
     const DWORD parentPid = ParseParentPid(commandLine);
     if (parentPid) g_parentProcess = OpenProcess(SYNCHRONIZE, FALSE, parentPid);
 
@@ -283,9 +364,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     g_window = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
                                CW_USEDEFAULT, CW_USEDEFAULT, 960, 640, nullptr, nullptr,
                                instance, nullptr);
-    if (!g_window || !InitializeControl() || !InitializeGraphics(g_window) || !g_frames.Open())
+    if (!g_window || !InitializeControl() || !InitializeUiBridge() ||
+        !InitializeGraphics(g_window) || !g_frames.Open())
     {
         if (g_window) DestroyWindow(g_window);
+        ShutdownUiBridge();
         ShutdownControl();
         CoUninitialize();
         return 3;
@@ -304,14 +387,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         g_context.Reset();
         g_device.Reset();
         DestroyWindow(g_window);
+        ShutdownUiBridge();
         ShutdownControl();
         CoUninitialize();
         return 4;
     }
 
-    if (g_background) g_ui.Hide();
-    else ShowWindow(g_window, showCommand == SW_HIDE ? SW_SHOWNORMAL : showCommand);
-    UpdateWindow(g_window);
+    g_ui.Hide();
     SetTimer(g_window, kTickTimer, kTickIntervalMs, nullptr);
     if (g_parentProcess) CreateThread(nullptr, 0, WatchParentProcess, nullptr, 0, nullptr);
 
@@ -330,6 +412,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     g_swapChain.Reset();
     g_context.Reset();
     g_device.Reset();
+    ShutdownUiBridge();
     ShutdownControl();
     if (g_parentProcess) CloseHandle(g_parentProcess);
     CoUninitialize();

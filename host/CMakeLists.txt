@@ -78,3 +78,9 @@ target_include_directories(native_ui_tests PRIVATE
 target_compile_definitions(native_ui_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(native_ui_tests PRIVATE d3d11 dxgi d3dcompiler user32 gdi32 winhttp crypt32 shell32 ole32 oleaut32)
 add_test(NAME native_ui_tests COMMAND native_ui_tests)
+
+add_executable(ui_bridge_tests tests/UiBridgeTests.cpp)
+target_include_directories(ui_bridge_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(ui_bridge_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(ui_bridge_tests PRIVATE user32)
+add_test(NAME ui_bridge_tests COMMAND ui_bridge_tests)

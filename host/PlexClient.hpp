@@ -15,11 +15,23 @@
 
 namespace wxl_plex
 {
+    constexpr int kPlexPageSize = 48;
+
     bool ParsePinJson(std::string_view json, PinAuth& result);
     std::vector<PlexServer> ParseResourcesXml(std::string_view xml);
     std::vector<PlexSection> ParseSectionsXml(std::string_view xml);
     std::vector<PlexItem> ParseItemsXml(std::string_view xml);
+    struct PlexPage
+    {
+        std::vector<PlexItem> items;
+        int offset = 0;
+        int size = 0;
+        int totalSize = 0;
+    };
+    PlexPage ParseItemsPageXml(std::string_view xml);
     PlexItem ParseMetadataXml(std::string_view xml);
+    std::string BuildChildrenPath(std::string_view ratingKey);
+    std::string BuildWatchlistPath();
     PlexPlayback BuildDirectPlayback(const PlexItem& item, const PlexServer& server);
     PlexPlayback BuildTranscodePlayback(const PlexItem& item, const PlexServer& server,
                                         std::string_view sessionId);
@@ -35,6 +47,9 @@ namespace wxl_plex
             Servers,
             Sections,
             Items,
+            Children,
+            Watchlist,
+            WatchlistResolved,
             Metadata,
             Error,
         };
@@ -45,6 +60,10 @@ namespace wxl_plex
         std::vector<PlexSection> sections;
         std::vector<PlexItem> items;
         PlexItem item;
+        bool preserveView = false;
+        int pageOffset = 0;
+        int pageSize = 0;
+        int pageTotalSize = 0;
     };
 
     class PlexClient final
@@ -55,9 +74,15 @@ namespace wxl_plex
 
         void StartLogin();
         void LoadResources();
+        void LoadWatchlist(int offset = 0, int size = kPlexPageSize);
         void LoadSections(const PlexServer& server);
-        void LoadItems(const PlexServer& server, const PlexSection& section);
-        void Search(const PlexServer& server, std::string query);
+        void LoadItems(const PlexServer& server, const PlexSection& section,
+                       int offset = 0, int size = kPlexPageSize);
+        void LoadChildren(const PlexServer& server, const PlexItem& item,
+                          int offset = 0, int size = kPlexPageSize);
+        void ResolveWatchlistItem(const PlexServer& server, const PlexItem& item);
+        void Search(const PlexServer& server, std::string query,
+                    int offset = 0, int size = kPlexPageSize);
         void LoadMetadata(const PlexServer& server, const PlexItem& item);
         void ReportTimeline(const PlexServer& server, const PlexItem& item,
                             TimelineState state, int positionMs);

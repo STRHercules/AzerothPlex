@@ -39,6 +39,7 @@ namespace wxl_plex
     struct PlexItem
     {
         std::string ratingKey;
+        std::string guid;
         std::string title;
         std::string type;
         std::string grandparentTitle;

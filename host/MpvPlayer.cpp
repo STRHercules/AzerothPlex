@@ -3,12 +3,26 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <malloc.h>
 #include <string>
 
 namespace wxl_mpv
 {
+    int ClampSeekMilliseconds(int requestedMs, int durationMs)
+    {
+        return durationMs > 0 ? std::clamp(requestedMs, 0, durationMs)
+                              : std::max(0, requestedMs);
+    }
+
+    bool IsPrematureEnd(int endReason, int durationMs, double positionSeconds)
+    {
+        return endReason == MPV_END_FILE_REASON_EOF && durationMs > 0 &&
+               std::isfinite(positionSeconds) && positionSeconds >= 0.0 &&
+               positionSeconds * 1000.0 + 2000.0 < durationMs;
+    }
+
     struct MpvPlayer::Api
     {
         using Create = mpv_handle* (*)();
@@ -20,6 +34,7 @@ namespace wxl_mpv
         using SetPropertyString = int (*)(mpv_handle*, const char*, const char*);
         using WaitEvent = mpv_event* (*)(mpv_handle*, double);
         using GetPropertyString = char* (*)(mpv_handle*, const char*);
+        using ErrorString = const char* (*)(int);
         using Free = void (*)(void*);
         using RenderCreate = int (*)(mpv_render_context**, mpv_handle*, mpv_render_param*);
         using RenderUpdate = uint64_t (*)(mpv_render_context*);
@@ -35,6 +50,7 @@ namespace wxl_mpv
         SetPropertyString setPropertyString = nullptr;
         WaitEvent waitEvent = nullptr;
         GetPropertyString getPropertyString = nullptr;
+        ErrorString errorString = nullptr;
         Free free = nullptr;
         RenderCreate renderCreate = nullptr;
         RenderUpdate renderUpdate = nullptr;
@@ -59,6 +75,7 @@ namespace wxl_mpv
                    Resolve(module, "mpv_set_property_string", setPropertyString) &&
                    Resolve(module, "mpv_wait_event", waitEvent) &&
                    Resolve(module, "mpv_get_property_string", getPropertyString) &&
+                   Resolve(module, "mpv_error_string", errorString) &&
                    Resolve(module, "mpv_free", free) &&
                    Resolve(module, "mpv_render_context_create", renderCreate) &&
                    Resolve(module, "mpv_render_context_update", renderUpdate) &&
@@ -110,6 +127,9 @@ namespace wxl_mpv
         if (api_->setOptionString(handle_, "config", "no") < 0 ||
             api_->setOptionString(handle_, "terminal", "no") < 0 ||
             api_->setOptionString(handle_, "vo", "libmpv") < 0 ||
+            api_->setOptionString(handle_, "hwdec", "no") < 0 ||
+            api_->setOptionString(handle_, "cache", "yes") < 0 ||
+            api_->setOptionString(handle_, "network-timeout", "30") < 0 ||
             api_->setOptionString(handle_, "idle", "yes") < 0 ||
             api_->initialize(handle_) < 0)
         {
@@ -174,6 +194,7 @@ namespace wxl_mpv
     bool MpvPlayer::Load(const wxl_plex::PlexPlayback& playback)
     {
         if (!IsInitialized() || playback.uri.empty()) return false;
+        lastPositionSeconds_ = 0.0;
         Command({"loadfile", playback.uri, "replace"});
         return true;
     }
@@ -225,10 +246,26 @@ namespace wxl_mpv
             {
                 const auto* end = static_cast<const mpv_event_end_file*>(event->data);
                 if (end && end->reason == MPV_END_FILE_REASON_ERROR)
-                    events.push_back({MpvEvent::Kind::Error, "Media load/playback failed", 0.0,
-                                      end->error});
+                {
+                    const char* reason = api_->errorString(end->error);
+                    std::string message = "Media load/playback failed";
+                    if (reason && *reason)
+                    {
+                        message += ": ";
+                        message += reason;
+                    }
+                    MpvEvent output{MpvEvent::Kind::Error, std::move(message),
+                                    lastPositionSeconds_, end->error};
+                    output.endReason = end->reason;
+                    events.push_back(std::move(output));
+                }
                 else
-                    events.push_back({MpvEvent::Kind::Ended, "Media ended"});
+                {
+                    MpvEvent output{MpvEvent::Kind::Ended, "Media ended",
+                                    lastPositionSeconds_};
+                    output.endReason = end ? end->reason : -1;
+                    events.push_back(std::move(output));
+                }
             }
             else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG)
                 events.push_back({MpvEvent::Kind::TracksChanged, "Video reconfigured"});
@@ -240,6 +277,8 @@ namespace wxl_mpv
             MpvEvent event{MpvEvent::Kind::PositionChanged};
             try { event.positionSeconds = std::stod(position); }
             catch (...) { event.positionSeconds = 0.0; }
+            lastPositionSeconds_ = std::max(0.0, event.positionSeconds);
+            event.positionSeconds = lastPositionSeconds_;
             api_->free(position);
             events.push_back(std::move(event));
         }

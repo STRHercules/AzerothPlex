@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wxl/EventScript.hpp"
+#include "VideoShared.hpp"
 
 #include <windows.h>
 
@@ -29,12 +30,21 @@ namespace wxl_video_screen
 
         void OnFrame(const wxl::events::FrameArgs& args);
         void OnWorldSceneEnd(const wxl::events::WorldSceneEndArgs& args);
+        void OnInput(const wxl::events::InputArgs& args);
         void OnUpdate(const wxl::events::UpdateArgs& args);
         void OnDeviceLost(const wxl::events::DeviceResetArgs& args);
         void OnDeviceReset(const wxl::events::DeviceResetArgs& args);
         void OnWorldLeave(const wxl::events::WorldLeaveArgs& args);
 
-        bool OpenHost(bool showWindow);
+        void DrawPlexPanel();
+        void DrawPlexLogin();
+        void DrawPlexServers();
+        void DrawPlexHome();
+        void DrawPlexLibrary();
+        void DrawPlexSearch();
+        void DrawPlexDetails();
+        void DrawPlexPlayer();
+        bool OpenHost();
         void HideHost();
         void CloseHost();
         bool PlaceInFront();
@@ -44,12 +54,19 @@ namespace wxl_video_screen
 
         bool ConnectFrames();
         bool ConnectControl();
+        bool ConnectUi();
         bool SendCommand(LONG command);
+        bool SendUiCommand(wxl_video_shared::UiCommand command, LONG index = -1,
+                           LONG value = 0, const char* text = nullptr);
+        bool RefreshUiState();
         void SendVolume(int volume);
         bool ValidateFrames() const;
         bool UploadLatestFrame(IDirect3DDevice9* device);
         void ReleaseTexture();
         void DrawWorldScreen(IDirect3DDevice9* device, void* sceneDepth, bool beforeWorld);
+        void DrawPinnedScreen(IDirect3DDevice9* device);
+        bool GetPinnedRect(IDirect3DDevice9* device, float& left, float& top,
+                           float& right, float& bottom) const;
         std::wstring ExtensionDirectory() const;
 
         const WXL_Api* api_ = nullptr;
@@ -57,6 +74,13 @@ namespace wxl_video_screen
         void* mappingView_ = nullptr;
         HANDLE controlMapping_ = nullptr;
         void* controlView_ = nullptr;
+        HANDLE uiMapping_ = nullptr;
+        void* uiView_ = nullptr;
+        wxl_video_shared::UiSnapshot uiState_{};
+        char search_[wxl_video_shared::kUiTextBytes]{};
+        float scrubPositionSeconds_ = 0.0f;
+        DWORD lastScrubAt_ = 0;
+        bool plexPanelOpen_ = false;
         DWORD lastConnectAttempt_ = 0;
         LONG lastFrameSequence_ = 0;
         LONG lastDrawResult_ = static_cast<LONG>(0x8000000AL);
@@ -93,6 +117,14 @@ namespace wxl_video_screen
         float bottomOffset_ = 0.5f;
         float fullVolumeDistance_ = 6.0f;
         float silentDistance_ = 60.0f;
+        int pinned_ = 0;
+        float pinnedLeft_ = 0.64f;
+        float pinnedTop_ = 0.04f;
+        float pinnedWidth_ = 0.32f;
+        bool pinnedDragging_ = false;
+        bool pinnedResizing_ = false;
+        float pinnedDragOffsetX_ = 0.0f;
+        float pinnedDragOffsetY_ = 0.0f;
         std::string status_ = "Waiting for the cinema helper.";
 
         static SceneClearFn originalSceneClear_;

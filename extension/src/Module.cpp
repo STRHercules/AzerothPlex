@@ -6,6 +6,8 @@
 
 #include "wxl/PluginApi.h"
 
+#include <cstddef>
+
 namespace
 {
     constexpr char kTag[] = "wxl-azeroth-plex";
@@ -30,9 +32,11 @@ const WXL_PluginInfo* __cdecl WXL_Query(void)
 
 int __cdecl WXL_Load(const WXL_Api* api)
 {
-    if (!api || api->apiVersion != WXL_API_VERSION || !api->Subscribe || !api->HookAttach ||
-        !api->UiAddPanel ||
-        !api->UiButton || !api->UiCheckbox || !api->UiSliderFloat || !api->UiSliderInt)
+    constexpr size_t kUiInputTextEnd = offsetof(WXL_Api, UiInputText) + sizeof(api->UiInputText);
+    if (!api || api->apiVersion != WXL_API_VERSION || api->structSize < kUiInputTextEnd ||
+        !api->Subscribe || !api->HookAttach || !api->UiAddPanel || !api->UiText ||
+        !api->UiSeparator || !api->UiButton || !api->UiCheckbox || !api->UiSliderFloat ||
+        !api->UiSliderInt || !api->UiSameLine || !api->UiInputText || !api->UiIsOpen)
         return 0;
 
     wxl::ext::EventScript::Bind(api);
@@ -41,6 +45,6 @@ int __cdecl WXL_Load(const WXL_Api* api)
 
     api->UiAddPanel("Azeroth Plex", &DrawPanel, nullptr);
     api->Log(WXL_LOG_INFO, kTag,
-             "0.5.0 loaded: native Plex screen + parent-bound helper");
+             "0.5.0 loaded: native Plex screen + in-game Plex UI");
     return 1;
 }

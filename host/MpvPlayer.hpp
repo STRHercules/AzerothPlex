@@ -16,6 +16,9 @@ struct ID3D11DeviceContext;
 
 namespace wxl_mpv
 {
+    int ClampSeekMilliseconds(int requestedMs, int durationMs);
+    bool IsPrematureEnd(int endReason, int durationMs, double positionSeconds);
+
     struct MpvEvent
     {
         enum class Kind
@@ -31,6 +34,7 @@ namespace wxl_mpv
         std::string message;
         double positionSeconds = 0.0;
         int errorCode = 0;
+        int endReason = -1;
     };
 
     class MpvPlayer final
@@ -67,5 +71,6 @@ namespace wxl_mpv
         mpv_render_context* renderContext_ = nullptr;
         uint8_t* frame_ = nullptr;
         bool hasFrame_ = false;
+        double lastPositionSeconds_ = 0.0;
     };
 }

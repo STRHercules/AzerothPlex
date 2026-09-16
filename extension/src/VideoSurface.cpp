@@ -29,8 +29,6 @@ namespace wxl_video_screen
     {
         constexpr char kTag[] = "wxl-azeroth-plex";
         constexpr wchar_t kHostWindowClass[] = L"WXLNativePlexHost";
-        constexpr UINT kShowHostMessage = WM_APP + 0x45;
-        constexpr UINT kHideHostMessage = WM_APP + 0x46;
         constexpr float kPi = 3.14159265358979323846f;
 
         void ModuleAddressMarker() {}
@@ -48,6 +46,18 @@ namespace wxl_video_screen
             D3DCOLOR color;
             float u, v;
         };
+
+        void FormatTime(char* output, size_t size, uint32_t milliseconds)
+        {
+            const uint32_t totalSeconds = milliseconds / 1000;
+            const uint32_t seconds = totalSeconds % 60;
+            const uint32_t minutes = (totalSeconds / 60) % 60;
+            const uint32_t hours = totalSeconds / 3600;
+            if (hours > 0)
+                std::snprintf(output, size, "%u:%02u:%02u", hours, minutes, seconds);
+            else
+                std::snprintf(output, size, "%u:%02u", minutes, seconds);
+        }
     }
 
     VideoSurface& VideoSurface::Instance()
@@ -60,6 +70,7 @@ namespace wxl_video_screen
     {
         on<&VideoSurface::OnFrame>(wxl::events::Event::OnFrame);
         on<&VideoSurface::OnWorldSceneEnd>(wxl::events::Event::OnWorldSceneEnd);
+        on<&VideoSurface::OnInput>(wxl::events::Event::OnInput);
         on<&VideoSurface::OnUpdate>(wxl::events::Event::OnUpdate);
         on<&VideoSurface::OnDeviceLost>(wxl::events::Event::OnDeviceLost);
         on<&VideoSurface::OnDeviceReset>(wxl::events::Event::OnDeviceReset);
@@ -72,6 +83,7 @@ namespace wxl_video_screen
         api_ = api;
         frameScratch_.resize(wxl_video_shared::kFrameBytes);
         ConnectControl();
+        ConnectUi();
         LoadPlacement();
         if (!api_->HookAttach || !api_->HookAttach(
                 "wxl-azeroth-plex.scene-clear",
@@ -93,7 +105,7 @@ namespace wxl_video_screen
         if (originalSceneClear_) originalSceneClear_(flags, colour);
 
         auto& self = Instance();
-        if (self.preWorldDrawn_ || !self.initialized_ || !self.depthTest_ || !self.visible_ ||
+        if (self.preWorldDrawn_ || self.pinned_ || !self.initialized_ || !self.depthTest_ || !self.visible_ ||
             !self.placed_ || (flags & (wxl::game::gx::clear::kColor |
                                       wxl::game::gx::clear::kDepth)) !=
                              (wxl::game::gx::clear::kColor |
@@ -116,6 +128,84 @@ namespace wxl_video_screen
         preWorldDrawn_ = false;
     }
 
+    void VideoSurface::OnInput(const wxl::events::InputArgs& args)
+    {
+        if (!pinned_ || !visible_ || (api_ && api_->UiIsOpen && api_->UiIsOpen())) return;
+
+        auto* device = static_cast<IDirect3DDevice9*>(wxl::game::gx::RawDevice());
+        if (!device) return;
+        const LPARAM lparam = static_cast<LPARAM>(args.lparam);
+        const float x = static_cast<float>(static_cast<short>(LOWORD(lparam)));
+        const float y = static_cast<float>(static_cast<short>(HIWORD(lparam)));
+
+        if (args.message == WM_LBUTTONDOWN)
+        {
+            float left = 0.0f;
+            float top = 0.0f;
+            float right = 0.0f;
+            float bottom = 0.0f;
+            if (!GetPinnedRect(device, left, top, right, bottom) ||
+                x < left || x > right || y < top || y > bottom)
+                return;
+
+            pinnedDragging_ = true;
+            pinnedResizing_ = x >= right - 24.0f && y >= bottom - 24.0f;
+            if (!pinnedResizing_)
+            {
+                pinnedDragOffsetX_ = x - left;
+                pinnedDragOffsetY_ = y - top;
+            }
+            D3DDEVICE_CREATION_PARAMETERS parameters{};
+            if (SUCCEEDED(device->GetCreationParameters(&parameters)) && parameters.hFocusWindow)
+                SetCapture(parameters.hFocusWindow);
+            *args.handled = true;
+            return;
+        }
+
+        if (pinnedDragging_ && args.message == WM_MOUSEMOVE)
+        {
+            D3DVIEWPORT9 viewport{};
+            if (FAILED(device->GetViewport(&viewport)) || viewport.Width == 0 || viewport.Height == 0)
+                return;
+
+            const float viewportWidth = static_cast<float>(viewport.Width);
+            const float viewportHeight = static_cast<float>(viewport.Height);
+            if (pinnedResizing_)
+            {
+                pinnedWidth_ = (x - static_cast<float>(viewport.X)) / viewportWidth - pinnedLeft_;
+            }
+            else
+            {
+                pinnedLeft_ = (x - pinnedDragOffsetX_ - static_cast<float>(viewport.X)) /
+                              viewportWidth;
+                pinnedTop_ = (y - pinnedDragOffsetY_ - static_cast<float>(viewport.Y)) /
+                             viewportHeight;
+            }
+            wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
+            *args.handled = true;
+            return;
+        }
+
+        if (pinnedDragging_ && args.message == WM_LBUTTONUP)
+        {
+            pinnedDragging_ = false;
+            pinnedResizing_ = false;
+            ReleaseCapture();
+            SavePlacement();
+            *args.handled = true;
+            return;
+        }
+
+        if (pinnedDragging_ && args.message == WM_CANCELMODE)
+        {
+            pinnedDragging_ = false;
+            pinnedResizing_ = false;
+            ReleaseCapture();
+            SavePlacement();
+            *args.handled = true;
+        }
+    }
+
     std::wstring VideoSurface::ExtensionDirectory() const
     {
         HMODULE module = nullptr;
@@ -130,27 +220,33 @@ namespace wxl_video_screen
         return std::filesystem::path(path).parent_path().wstring();
     }
 
-    bool VideoSurface::OpenHost(bool showWindow)
+    bool VideoSurface::OpenHost()
     {
-        if (HWND host = FindWindowW(kHostWindowClass, nullptr))
-        {
-            PostMessageW(host, showWindow ? kShowHostMessage : kHideHostMessage, 0, 0);
-            return true;
-        }
+        if (FindWindowW(kHostWindowClass, nullptr)) return true;
 
         const std::wstring directory = ExtensionDirectory();
         const std::wstring hostPath = directory.empty()
             ? std::wstring{} : (std::filesystem::path(directory) / L"wxl-video-host.exe").wstring();
         if (hostPath.empty() || GetFileAttributesW(hostPath.c_str()) == INVALID_FILE_ATTRIBUTES)
         {
-            status_ = "Cinema helper is missing from the extension folder.";
+            status_ = "Plex playback worker is missing from the extension folder.";
             if (api_) api_->Log(WXL_LOG_ERROR, kTag, "%s", status_.c_str());
             return false;
         }
 
+        if (ConnectUi())
+        {
+            auto* bridge = static_cast<wxl_video_shared::UiBridge*>(uiView_);
+            std::memset(bridge, 0, sizeof(*bridge));
+            bridge->magic = wxl_video_shared::kUiMagic;
+            bridge->version = wxl_video_shared::kUiVersion;
+            bridge->structBytes = sizeof(*bridge);
+            bridge->slots[0].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+            bridge->slots[1].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+        }
+
         std::wstring commandLine = L"\"" + hostPath + L"\" --parent-pid " +
-                                   std::to_wstring(GetCurrentProcessId());
-        if (!showWindow) commandLine += L" --background";
+                                   std::to_wstring(GetCurrentProcessId()) + L" --background";
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
@@ -167,25 +263,22 @@ namespace wxl_video_screen
 
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
-        status_ = showWindow
-            ? "Cinema troubleshooting window opened."
-            : "Background cinema player started.";
+        status_ = "Background Plex player started.";
         return true;
     }
 
     void VideoSurface::HideHost()
     {
-        if (HWND host = FindWindowW(kHostWindowClass, nullptr))
-        {
-            PostMessageW(host, kHideHostMessage, 0, 0);
-            status_ = "Cinema player is running in the background.";
-        }
+        plexPanelOpen_ = false;
+        status_ = "Plex player is running in the background.";
     }
 
     void VideoSurface::CloseHost()
     {
         if (HWND host = FindWindowW(kHostWindowClass, nullptr))
             PostMessageW(host, WM_CLOSE, 0, 0);
+        plexPanelOpen_ = false;
+        status_ = "Plex player closed.";
     }
 
     bool VideoSurface::ConnectControl()
@@ -237,15 +330,96 @@ namespace wxl_video_screen
 
     bool VideoSurface::SendCommand(LONG command)
     {
-        const bool showWindow = command == static_cast<LONG>(wxl_video_shared::Command::Show);
-        if (!ConnectControl() || !OpenHost(showWindow)) return false;
+        if (!ConnectControl() || !OpenHost()) return false;
         auto* control = static_cast<wxl_video_shared::ControlBlock*>(controlView_);
         InterlockedExchange(&control->command, command);
         MemoryBarrier();
         LONG sequence = control->commandSequence + 1;
         if (sequence <= 0) sequence = 1;
         InterlockedExchange(&control->commandSequence, sequence);
-        status_ = "Command sent to the background cinema player.";
+        status_ = "Command sent to the background Plex player.";
+        return true;
+    }
+
+    bool VideoSurface::ConnectUi()
+    {
+        if (uiView_)
+        {
+            const auto* bridge = static_cast<const wxl_video_shared::UiBridge*>(uiView_);
+            return bridge->magic == wxl_video_shared::kUiMagic &&
+                   bridge->version == wxl_video_shared::kUiVersion &&
+                   bridge->structBytes == sizeof(*bridge);
+        }
+
+        uiMapping_ = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+            static_cast<DWORD>(sizeof(wxl_video_shared::UiBridge)),
+            wxl_video_shared::kUiMappingName);
+        if (!uiMapping_) return false;
+        const bool created = GetLastError() != ERROR_ALREADY_EXISTS;
+        uiView_ = MapViewOfFile(uiMapping_, FILE_MAP_ALL_ACCESS, 0, 0,
+                                sizeof(wxl_video_shared::UiBridge));
+        if (!uiView_)
+        {
+            CloseHandle(uiMapping_);
+            uiMapping_ = nullptr;
+            return false;
+        }
+
+        auto* bridge = static_cast<wxl_video_shared::UiBridge*>(uiView_);
+        if (created)
+        {
+            std::memset(bridge, 0, sizeof(*bridge));
+            bridge->magic = wxl_video_shared::kUiMagic;
+            bridge->version = wxl_video_shared::kUiVersion;
+            bridge->structBytes = sizeof(*bridge);
+            bridge->slots[0].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+            bridge->slots[1].structBytes = sizeof(wxl_video_shared::UiSnapshot);
+        }
+        if (bridge->magic != wxl_video_shared::kUiMagic ||
+            bridge->version != wxl_video_shared::kUiVersion ||
+            bridge->structBytes != sizeof(*bridge))
+        {
+            UnmapViewOfFile(uiView_);
+            uiView_ = nullptr;
+            CloseHandle(uiMapping_);
+            uiMapping_ = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    bool VideoSurface::SendUiCommand(wxl_video_shared::UiCommand command, LONG index,
+                                     LONG value, const char* text)
+    {
+        if (!ConnectUi() || !OpenHost()) return false;
+        auto* bridge = static_cast<wxl_video_shared::UiBridge*>(uiView_);
+        std::memset(&bridge->command, 0, sizeof(bridge->command));
+        bridge->command.command = static_cast<LONG>(command);
+        bridge->command.index = index;
+        bridge->command.value = value;
+        if (text)
+        {
+            const size_t length = std::min(std::strlen(text),
+                                           wxl_video_shared::kUiTextBytes - 1);
+            std::memcpy(bridge->command.text, text, length);
+            bridge->command.text[length] = '\0';
+        }
+        MemoryBarrier();
+        LONG sequence = bridge->commandSequence + 1;
+        if (sequence <= 0) sequence = 1;
+        InterlockedExchange(&bridge->commandSequence, sequence);
+        return true;
+    }
+
+    bool VideoSurface::RefreshUiState()
+    {
+        if (!ConnectUi()) return false;
+        wxl_video_shared::UiSnapshot snapshot{};
+        if (!wxl_video_shared::ReadUiSnapshot(
+                static_cast<const wxl_video_shared::UiBridge*>(uiView_), snapshot))
+            return false;
+        uiState_ = snapshot;
         return true;
     }
 
@@ -345,7 +519,9 @@ namespace wxl_video_screen
         output << "wxl-video-screen-v1\t" << mapId_ << '\t'
                << std::setprecision(9) << center_[0] << '\t' << center_[1] << '\t' << center_[2] << '\t'
                << right_[0] << '\t' << right_[1] << '\t' << right_[2] << '\t'
-               << width_ << '\t' << visible_ << '\t' << depthTest_ << '\t' << depthBias_ << '\n';
+               << width_ << '\t' << visible_ << '\t' << depthTest_ << '\t' << depthBias_
+               << '\t' << pinned_ << '\t' << pinnedLeft_ << '\t' << pinnedTop_
+               << '\t' << pinnedWidth_ << '\n';
         output.close();
         if (!output) return;
         MoveFileExW(temporary.c_str(), target.c_str(),
@@ -368,6 +544,10 @@ namespace wxl_video_screen
         float right[3]{};
         float width = 0.0f;
         float depthBias = -0.010f;
+        int pinned = 0;
+        float pinnedLeft = 0.64f;
+        float pinnedTop = 0.04f;
+        float pinnedWidth = 0.32f;
         if (!std::getline(input, version, '\t') || version != "wxl-video-screen-v1" ||
             !(input >> map) || input.get() != '\t' ||
             !(input >> center[0]) || input.get() != '\t' ||
@@ -384,6 +564,26 @@ namespace wxl_video_screen
             input.get();
             if (!(input >> depthBias)) depthBias = -0.010f;
         }
+        if (input.peek() == '\t')
+        {
+            input.get();
+            if (!(input >> pinned)) pinned = 0;
+        }
+        if (input.peek() == '\t')
+        {
+            input.get();
+            if (!(input >> pinnedLeft)) pinnedLeft = 0.64f;
+        }
+        if (input.peek() == '\t')
+        {
+            input.get();
+            if (!(input >> pinnedTop)) pinnedTop = 0.04f;
+        }
+        if (input.peek() == '\t')
+        {
+            input.get();
+            if (!(input >> pinnedWidth)) pinnedWidth = 0.32f;
+        }
 
         const float rightLength = std::sqrt(right[0] * right[0] + right[1] * right[1]);
         if (map < 0 || !Finite3(center) || !(rightLength > 0.9f && rightLength < 1.1f) ||
@@ -399,6 +599,11 @@ namespace wxl_video_screen
         visible_ = visible ? 1 : 0;
         depthTest_ = depth ? 1 : 0;
         depthBias_ = std::isfinite(depthBias) ? std::clamp(depthBias, -0.030f, 0.005f) : -0.010f;
+        pinned_ = pinned ? 1 : 0;
+        pinnedWidth_ = std::isfinite(pinnedWidth) ? pinnedWidth : 0.32f;
+        pinnedLeft_ = std::isfinite(pinnedLeft) ? pinnedLeft : 0.64f;
+        pinnedTop_ = std::isfinite(pinnedTop) ? pinnedTop : 0.04f;
+        wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
         placed_ = true;
         status_ = "Restored the saved world-screen placement.";
     }
@@ -685,6 +890,127 @@ namespace wxl_video_screen
         state->Release();
     }
 
+    bool VideoSurface::GetPinnedRect(IDirect3DDevice9* device, float& left, float& top,
+                                     float& right, float& bottom) const
+    {
+        if (!device) return false;
+        D3DVIEWPORT9 viewport{};
+        if (FAILED(device->GetViewport(&viewport)) || viewport.Width == 0 || viewport.Height == 0)
+            return false;
+
+        const float viewportWidth = static_cast<float>(viewport.Width);
+        const float viewportHeight = static_cast<float>(viewport.Height);
+        float leftFraction = pinnedLeft_;
+        float topFraction = pinnedTop_;
+        float widthFraction = pinnedWidth_;
+        wxl_video_shared::ClampPinnedLayout(leftFraction, topFraction, widthFraction);
+        const float width = viewportWidth * widthFraction;
+        const float height = width * 9.0f / 16.0f;
+        left = static_cast<float>(viewport.X) + leftFraction * viewportWidth - 0.5f;
+        top = static_cast<float>(viewport.Y) + topFraction * viewportHeight - 0.5f;
+        right = left + width;
+        bottom = top + height;
+        return true;
+    }
+
+    void VideoSurface::DrawPinnedScreen(IDirect3DDevice9* device)
+    {
+        if (!device || !visible_) return;
+
+        UploadLatestFrame(device);
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+        if (!GetPinnedRect(device, left, top, right, bottom)) return;
+
+        struct ScreenVertex
+        {
+            float x, y, z, rhw;
+            D3DCOLOR color;
+            float u, v;
+        };
+        const D3DCOLOR topLeft = texture_ ? 0xFFFFFFFFu : 0xFFFF2D55u;
+        const D3DCOLOR topRight = texture_ ? 0xFFFFFFFFu : 0xFFFFD60Au;
+        const D3DCOLOR bottomLeft = texture_ ? 0xFFFFFFFFu : 0xFF00E5FFu;
+        const D3DCOLOR bottomRight = texture_ ? 0xFFFFFFFFu : 0xFF7C4DFFu;
+        const ScreenVertex vertices[4] = {
+            {left, top, 0.0f, 1.0f, topLeft, 0.0f, 0.0f},
+            {right, top, 0.0f, 1.0f, topRight, 1.0f, 0.0f},
+            {left, bottom, 0.0f, 1.0f, bottomLeft, 0.0f, 1.0f},
+            {right, bottom, 0.0f, 1.0f, bottomRight, 1.0f, 1.0f},
+        };
+        const ScreenVertex border[5] = {
+            {vertices[0].x, vertices[0].y, vertices[0].z, vertices[0].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+            {vertices[1].x, vertices[1].y, vertices[1].z, vertices[1].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+            {vertices[3].x, vertices[3].y, vertices[3].z, vertices[3].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+            {vertices[2].x, vertices[2].y, vertices[2].z, vertices[2].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+            {vertices[0].x, vertices[0].y, vertices[0].z, vertices[0].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+        };
+
+        IDirect3DStateBlock9* state = nullptr;
+        const HRESULT stateResult = device->CreateStateBlock(D3DSBT_ALL, &state);
+        lastStateResult_ = stateResult;
+        if (FAILED(stateResult) || !state) return;
+
+        device->SetVertexShader(nullptr);
+        device->SetPixelShader(nullptr);
+        device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+        device->SetTexture(0, texture_);
+        if (texture_)
+        {
+            device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        }
+        else
+        {
+            device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        }
+        device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+        device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+        device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        device->SetRenderState(D3DRS_LIGHTING, FALSE);
+        device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        device->SetRenderState(D3DRS_ZENABLE, FALSE);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        device->SetRenderState(D3DRS_CLIPPING, TRUE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0Fu);
+
+        const HRESULT drawResult = device->DrawPrimitiveUP(
+            D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(ScreenVertex));
+        HRESULT borderResult = S_OK;
+        if (outline_)
+        {
+            device->SetTexture(0, nullptr);
+            device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+            device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+            borderResult = device->DrawPrimitiveUP(
+                D3DPT_LINESTRIP, 4, border, sizeof(ScreenVertex));
+        }
+        lastDrawResult_ = FAILED(drawResult) ? drawResult : borderResult;
+        if (SUCCEEDED(drawResult) && SUCCEEDED(borderResult)) ++drawSuccesses_;
+        state->Apply();
+        state->Release();
+    }
+
     void VideoSurface::OnWorldSceneEnd(const wxl::events::WorldSceneEndArgs& args)
     {
         ++worldSceneCalls_;
@@ -696,7 +1022,9 @@ namespace wxl_video_screen
                       placed_ ? 1 : 0, mapId_);
             loggedFirstWorldScene_ = true;
         }
-        if (!depthTest_)
+        if (pinned_)
+            DrawPinnedScreen(static_cast<IDirect3DDevice9*>(args.device));
+        else if (!depthTest_)
             DrawWorldScreen(static_cast<IDirect3DDevice9*>(args.device), args.sceneDepth, false);
     }
 
@@ -758,20 +1086,298 @@ namespace wxl_video_screen
         ReleaseTexture();
     }
 
+    void VideoSurface::DrawPlexLogin()
+    {
+        if (api_->UiButton("Open Plex sign-in"))
+            SendUiCommand(wxl_video_shared::UiCommand::StartLogin);
+    }
+
+    void VideoSurface::DrawPlexServers()
+    {
+        api_->UiText("Choose a Plex server.");
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.serverCount), wxl_video_shared::kUiMaxServers));
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            char label[192]{};
+            std::snprintf(label, sizeof(label), "%u. %s", index + 1,
+                          uiState_.servers[index].name[0]
+                              ? uiState_.servers[index].name : "Plex server");
+            if (api_->UiButton(label))
+                SendUiCommand(wxl_video_shared::UiCommand::SelectServer,
+                              static_cast<LONG>(index));
+            api_->UiSameLine();
+            api_->UiText(uiState_.servers[index].uri[0]
+                             ? uiState_.servers[index].uri : "address unavailable");
+        }
+    }
+
+    void VideoSurface::DrawPlexHome()
+    {
+        if (api_->UiButton("Choose another Plex server"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Servers));
+        api_->UiSameLine();
+        if (api_->UiButton("Search Plex"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Search));
+        api_->UiSameLine();
+        if (api_->UiButton("Sign out of Plex"))
+            SendUiCommand(wxl_video_shared::UiCommand::SignOut);
+
+        if (!uiState_.watchlistLoaded)
+            api_->UiText("Loading Plex watchlist...");
+        else
+        {
+            char watchlist[96]{};
+            std::snprintf(watchlist, sizeof(watchlist), "Watchlist (%u)",
+                          uiState_.watchlistCount);
+            if (api_->UiButton(watchlist))
+                SendUiCommand(wxl_video_shared::UiCommand::OpenWatchlist);
+            if (uiState_.watchlistError[0]) api_->UiText(uiState_.watchlistError);
+        }
+
+        api_->UiText("Plex libraries:");
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.sectionCount), wxl_video_shared::kUiMaxSections));
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            char label[224]{};
+            std::snprintf(label, sizeof(label), "%u. %s (%s)", index + 1,
+                          uiState_.sections[index].title[0]
+                              ? uiState_.sections[index].title : "Plex library",
+                          uiState_.sections[index].type[0]
+                              ? uiState_.sections[index].type : "unknown");
+            if (api_->UiButton(label))
+                SendUiCommand(wxl_video_shared::UiCommand::SelectSection,
+                              static_cast<LONG>(index));
+        }
+    }
+
+    void VideoSurface::DrawPlexLibrary()
+    {
+        if (uiState_.browseDepth > 0)
+        {
+            char back[192]{};
+            std::snprintf(back, sizeof(back), "Back from %s",
+                          uiState_.browseTitle[0] ? uiState_.browseTitle : "child items");
+            if (api_->UiButton(back))
+                SendUiCommand(wxl_video_shared::UiCommand::NavigateBack);
+        }
+        else if (api_->UiButton("Back to Plex libraries"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Home));
+        if (uiState_.browseTitle[0]) api_->UiText(uiState_.browseTitle);
+        api_->UiSeparator();
+
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.itemCount), wxl_video_shared::kUiMaxItems));
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            const auto& item = uiState_.items[index];
+            char label[256]{};
+            if (item.grandparentTitle[0])
+                std::snprintf(label, sizeof(label), "%u. %s - %s", index + 1,
+                              item.grandparentTitle, item.title[0] ? item.title : "Plex item");
+            else
+                std::snprintf(label, sizeof(label), "%u. %s", index + 1,
+                              item.title[0] ? item.title : "Plex item");
+            if (api_->UiButton(label))
+                SendUiCommand(wxl_video_shared::UiCommand::SelectItem,
+                              static_cast<LONG>(index));
+        }
+        if (count == 0) api_->UiText("No Plex items found.");
+
+        const bool hasPrevious = uiState_.pageOffset > 0;
+        const bool hasNext = uiState_.pageSize > 0 &&
+                             uiState_.pageOffset < uiState_.pageTotalSize &&
+                             uiState_.pageSize <= uiState_.pageTotalSize - uiState_.pageOffset;
+        if (hasPrevious && api_->UiButton("Previous page"))
+            SendUiCommand(wxl_video_shared::UiCommand::PreviousPage);
+        if (hasPrevious && hasNext) api_->UiSameLine();
+        if (hasNext && api_->UiButton("Next page"))
+            SendUiCommand(wxl_video_shared::UiCommand::NextPage);
+        if (count > 0 && uiState_.pageTotalSize > 0)
+        {
+            char page[96]{};
+            const uint32_t first = uiState_.pageOffset + 1;
+            const uint32_t last = std::min(
+                uiState_.pageOffset + count, uiState_.pageTotalSize);
+            std::snprintf(page, sizeof(page), "Showing %u-%u of %u",
+                          first, last, uiState_.pageTotalSize);
+            api_->UiText(page);
+        }
+    }
+
+    void VideoSurface::DrawPlexSearch()
+    {
+        api_->UiInputText("Plex search", search_, sizeof(search_));
+        if (api_->UiButton("Search Plex now"))
+            SendUiCommand(wxl_video_shared::UiCommand::Search, -1, 0, search_);
+        api_->UiSameLine();
+        if (api_->UiButton("Back to Plex libraries"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Home));
+    }
+
+    void VideoSurface::DrawPlexDetails()
+    {
+        if (api_->UiButton("Back to Plex items"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Library));
+        api_->UiText(uiState_.item.title[0] ? uiState_.item.title : "Plex item");
+        api_->UiText(uiState_.item.type[0] ? uiState_.item.type : "Unknown type");
+        if (uiState_.item.grandparentTitle[0])
+            api_->UiText(uiState_.item.grandparentTitle);
+        if (uiState_.item.viewOffsetMs > 0)
+        {
+            char resume[96]{};
+            std::snprintf(resume, sizeof(resume), "Resume position: %ld ms",
+                          static_cast<long>(uiState_.item.viewOffsetMs));
+            api_->UiText(resume);
+        }
+        if (api_->UiButton("Play selected Plex item"))
+            SendUiCommand(wxl_video_shared::UiCommand::Play);
+
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.streamCount), wxl_video_shared::kUiMaxStreams));
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            const auto& stream = uiState_.streams[index];
+            if (stream.streamType == 2)
+            {
+                char label[192]{};
+                std::snprintf(label, sizeof(label), "%u. Audio: %s%s%s", index + 1, stream.title,
+                              stream.title[0] && stream.language[0] ? " (" : "",
+                              stream.title[0] && stream.language[0] ? stream.language : "");
+                if (stream.title[0] && stream.language[0])
+                    std::strncat(label, ")", sizeof(label) - std::strlen(label) - 1);
+                if (api_->UiButton(label))
+                    SendUiCommand(wxl_video_shared::UiCommand::SelectAudio,
+                                  static_cast<LONG>(index));
+            }
+            else if (stream.streamType == 3)
+            {
+                char label[192]{};
+                std::snprintf(label, sizeof(label), "%u. Subtitle: %s%s%s", index + 1,
+                              stream.title,
+                              stream.title[0] && stream.language[0] ? " (" : "",
+                              stream.title[0] && stream.language[0] ? stream.language : "");
+                if (stream.title[0] && stream.language[0])
+                    std::strncat(label, ")", sizeof(label) - std::strlen(label) - 1);
+                if (api_->UiButton(label))
+                    SendUiCommand(wxl_video_shared::UiCommand::SelectSubtitle,
+                                  static_cast<LONG>(index));
+            }
+        }
+    }
+
+    void VideoSurface::DrawPlexPlayer()
+    {
+        api_->UiText("Video continues on the placed world-space screen.");
+        if (uiState_.playbackDurationMs > 0)
+        {
+            const float duration = uiState_.playbackDurationMs / 1000.0f;
+            scrubPositionSeconds_ = std::clamp(
+                scrubPositionSeconds_, 0.0f, duration);
+            if (GetTickCount() - lastScrubAt_ > 250)
+                scrubPositionSeconds_ = std::clamp(
+                    uiState_.playbackPositionMs / 1000.0f, 0.0f, duration);
+            if (api_->UiSliderFloat("Timeline", &scrubPositionSeconds_, 0.0f, duration))
+            {
+                lastScrubAt_ = GetTickCount();
+                const double milliseconds = scrubPositionSeconds_ * 1000.0;
+                const LONG positionMs = static_cast<LONG>(std::min(
+                    milliseconds, static_cast<double>(0x7FFFFFFF)));
+                SendUiCommand(wxl_video_shared::UiCommand::Seek, -1, positionMs);
+            }
+            char timeline[64]{};
+            char current[32]{};
+            char total[32]{};
+            FormatTime(current, sizeof(current), uiState_.playbackPositionMs);
+            FormatTime(total, sizeof(total), uiState_.playbackDurationMs);
+            std::snprintf(timeline, sizeof(timeline), "%s / %s", current, total);
+            api_->UiText(timeline);
+        }
+        else
+        {
+            api_->UiText("Timeline unavailable for this item.");
+        }
+        if (api_->UiButton("Play Plex playback"))
+            SendUiCommand(wxl_video_shared::UiCommand::Play);
+        api_->UiSameLine();
+        if (api_->UiButton("Pause Plex playback"))
+            SendUiCommand(wxl_video_shared::UiCommand::Pause);
+        api_->UiSameLine();
+        if (api_->UiButton("Stop Plex playback"))
+            SendUiCommand(wxl_video_shared::UiCommand::Stop);
+        api_->UiSameLine();
+        if (api_->UiButton("Back to Plex item"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Details));
+    }
+
+    void VideoSurface::DrawPlexPanel()
+    {
+        if (!FindWindowW(kHostWindowClass, nullptr))
+        {
+            api_->UiText("Plex playback worker is not running.");
+            if (api_->UiButton("Start Plex playback worker")) OpenHost();
+            return;
+        }
+        if (!RefreshUiState())
+        {
+            api_->UiText("Plex player is starting.");
+            return;
+        }
+        if (uiState_.status[0]) api_->UiText(uiState_.status);
+        if (uiState_.error[0]) api_->UiText(uiState_.error);
+
+        switch (uiState_.view)
+        {
+        case wxl_video_shared::UiView::Login: DrawPlexLogin(); break;
+        case wxl_video_shared::UiView::Servers: DrawPlexServers(); break;
+        case wxl_video_shared::UiView::Home: DrawPlexHome(); break;
+        case wxl_video_shared::UiView::Library: DrawPlexLibrary(); break;
+        case wxl_video_shared::UiView::Search: DrawPlexSearch(); break;
+        case wxl_video_shared::UiView::Details: DrawPlexDetails(); break;
+        case wxl_video_shared::UiView::Player: DrawPlexPlayer(); break;
+        default: api_->UiText("Plex player returned an invalid view."); break;
+        }
+        if (uiState_.view == wxl_video_shared::UiView::Player &&
+            !uiState_.item.ratingKey[0] && api_->UiButton("Back to Plex sign-in"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Login));
+    }
+
     void VideoSurface::DrawPanel()
     {
         if (!api_) return;
         api_->UiText("Native Plex player with a physical world-space screen.");
-        if (api_->UiButton("Open Plex player"))
-            SendCommand(static_cast<LONG>(wxl_video_shared::Command::Show));
-        if (api_->UiButton("Hide Plex player"))
-            SendCommand(static_cast<LONG>(wxl_video_shared::Command::Hide));
-        if (api_->UiButton("Play"))
-            SendCommand(static_cast<LONG>(wxl_video_shared::Command::Play));
-        if (api_->UiButton("Pause"))
-            SendCommand(static_cast<LONG>(wxl_video_shared::Command::Pause));
-        if (api_->UiButton("Stop"))
-            SendCommand(static_cast<LONG>(wxl_video_shared::Command::Stop));
+        if (plexPanelOpen_)
+        {
+            if (api_->UiButton("Hide Plex player UI"))
+                HideHost();
+            else
+            {
+                DrawPlexPanel();
+                api_->UiSeparator();
+            }
+        }
+        else if (api_->UiButton("Open Plex player inside WoW"))
+        {
+            if (OpenHost()) plexPanelOpen_ = true;
+        }
+
+        if (!plexPanelOpen_)
+        {
+            if (api_->UiButton("Play"))
+                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Play));
+            if (api_->UiButton("Pause"))
+                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Pause));
+            if (api_->UiButton("Stop"))
+                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Stop));
+        }
         api_->UiSeparator();
 
         if (api_->UiSliderInt("Master volume", &masterVolume_, 0, 100))
@@ -787,10 +1393,29 @@ namespace wxl_video_screen
         char volumeStatus[96]{};
         std::snprintf(volumeStatus, sizeof(volumeStatus), "Current screen audio: %d%%", effectiveVolume_);
         api_->UiText(volumeStatus);
-        if (api_->UiButton("Show Plex helper window")) OpenHost(true);
-        if (api_->UiButton("Hide Plex helper window")) HideHost();
-        if (api_->UiButton("Close Plex player")) CloseHost();
+        if (api_->UiButton("Close background Plex player")) CloseHost();
         api_->UiSeparator();
+
+        if (api_->UiCheckbox("Pin Plex screen to display", &pinned_))
+        {
+            if (placed_) SavePlacement();
+            else status_ = "Pinned Plex screen enabled; place it later to save the setting.";
+        }
+        if (pinned_)
+        {
+            api_->UiText("Pinned Plex screen stays fixed while your character moves.");
+            api_->UiText("Use these controls while the WoW overlay is open; drag when it is closed.");
+            bool pinnedLayoutChanged = api_->UiSliderFloat(
+                "Pinned size", &pinnedWidth_, 0.15f, 0.80f) != 0;
+            pinnedLayoutChanged = api_->UiSliderFloat(
+                "Pinned X (left to right)", &pinnedLeft_, 0.0f,
+                std::max(0.0f, 1.0f - pinnedWidth_)) != 0 || pinnedLayoutChanged;
+            pinnedLayoutChanged = api_->UiSliderFloat(
+                "Pinned Y (top to bottom)", &pinnedTop_, 0.0f,
+                std::max(0.0f, 1.0f - pinnedWidth_ * 9.0f / 16.0f)) != 0 || pinnedLayoutChanged;
+            wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
+            if (pinnedLayoutChanged) SavePlacement();
+        }
 
         if (api_->UiSliderFloat("Screen width (yards)", &width_, 2.0f, 30.0f) && placed_)
             SavePlacement();

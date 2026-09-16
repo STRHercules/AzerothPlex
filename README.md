@@ -1,8 +1,9 @@
 # Azeroth Plex
 
-A native Plex client for the WarcraftXL 3.3.5a build-12340 client. It uses a
-small Win32/Dear ImGui helper with libmpv playback and mirrors the current
-video onto a client-local, movable world-space screen.
+A native Plex client for the WarcraftXL 3.3.5a build-12340 client. Its Plex
+browser and playback controls render in the in-game Azeroth Plex panel. A
+hidden Win32 worker handles libmpv playback and mirrors the current video onto
+a client-local, movable world-space screen.
 
 ## Install
 
@@ -10,18 +11,35 @@ video onto a client-local, movable world-space screen.
 2. Install the release containing `wxl-azeroth-plex.dll`,
    `wxl-video-host.exe`, `libmpv-2.dll`, `wxl.json`, and this documentation.
 3. Restart the client when WarcraftXL requests it.
-4. Press **Insert**, open **Video Cinema**, and choose **Open Plex player**.
+4. Press **Insert**, open **Video Cinema**, and choose **Open Plex player inside
+   WoW**.
 
 No Microsoft Edge WebView2 runtime is required.
 
 ## First login and playback
 
-1. Choose **Open Plex sign-in** in the native helper.
+1. Choose **Open Plex sign-in** in the in-game Azeroth Plex panel.
 2. Complete Plex PIN authorization in the system browser.
 3. Select a reachable Plex server and library.
 4. Choose a movie, show, season, or episode and press **Play**.
-5. Use the native helper for browsing, search, playback, seeking, tracks, and
-   subtitles. Hiding the helper leaves playback and audio running.
+5. Use the in-game panel for browsing, search, playback, tracks, and subtitles.
+   Hiding the panel leaves playback and audio running.
+
+## Plex navigation
+
+- **Watchlist** appears above the Plex library list on the Home screen;
+- selecting a show opens its seasons, and selecting a season opens its episodes;
+- large movie, show, and child-item lists expose Previous page and Next page;
+- movies, episodes, tracks, playlists, and other media leaves open their metadata
+  view before playback when supported.
+
+Poster paths are retained from Plex while navigating. WarcraftXL ABI 1.1 does
+not expose an in-game image control, so live poster rendering requires a future
+core UI image service; playback remains visible on the placed world-space screen.
+
+The pinned x86 libmpv build includes the normal FFmpeg audio/video decoders;
+separate codec DLLs are not required. If a direct stream ends early, the worker
+reports the mpv error and retries through Plex transcoding when possible.
 
 The Plex token is protected with Windows DPAPI under
 `%LOCALAPPDATA%\WarcraftXL\plex-player`. The account password is never entered
@@ -37,6 +55,10 @@ object. In the in-game **Video Cinema** panel:
 - rotate, raise, lower, hide, or show the screen;
 - enable character/world depth occlusion and adjust depth offset;
 - enable distance-based audio and tune its range.
+- enable **Pin Plex screen to display** to keep the video fixed in the top-right
+  of the game viewport while the character moves; use **Pinned size**, **Pinned
+  X**, and **Pinned Y** to reposition or resize it. Dragging the video and its
+  lower-right corner is also supported when the game cursor is available.
 
 Placement is saved to
 `Extensions/wxl-azeroth-plex/world-screen.tsv` and restored per client.
@@ -58,9 +80,9 @@ to Plex direct-host names.
 
 ## Build
 
-The helper is a Win32 C++20 target. The pinned x86 libmpv development package
-must be supplied through `MPV_ROOT`; the build dynamically loads
-`libmpv-2.dll` and does not require an MSVC import library.
+The hidden playback worker is a Win32 C++20 target. The pinned x86 libmpv
+development package must be supplied through `MPV_ROOT`; the build dynamically
+loads `libmpv-2.dll` and does not require an MSVC import library.
 
 ```powershell
 cmake -S host -B host/build -A Win32 `

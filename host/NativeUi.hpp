@@ -3,6 +3,7 @@
 #include "FramePublisher.hpp"
 #include "MpvPlayer.hpp"
 #include "PlexClient.hpp"
+#include "VideoShared.hpp"
 
 #include <d3d11.h>
 
@@ -26,10 +27,19 @@ namespace wxl_ui
     {
         View view = View::Login;
         std::string error;
+        std::string watchlistError;
         std::vector<wxl_plex::PlexServer> servers;
         std::vector<wxl_plex::PlexSection> sections;
         std::vector<wxl_plex::PlexItem> items;
+        std::vector<wxl_plex::PlexItem> watchlist;
         wxl_plex::PlexItem item;
+        bool watchlistLoaded = false;
+        int pageOffset = 0;
+        int pageSize = 0;
+        int pageTotalSize = 0;
+        int watchlistOffset = 0;
+        int watchlistSize = 0;
+        int watchlistTotalSize = 0;
 
         void Apply(const wxl_plex::PlexEvent& event);
     };
@@ -42,8 +52,10 @@ namespace wxl_ui
                         wxl_frame::FramePublisher& frames);
         void SetFrame(const uint8_t* bgra, uint32_t stride);
         void HandleMpvEvents(const std::vector<wxl_mpv::MpvEvent>& events);
+        void PumpPlexEvents();
+        void HandleUiCommand(const wxl_video_shared::UiCommandPacket& command);
+        void PublishUiState(wxl_video_shared::UiSnapshot& snapshot) const;
         void Draw();
-        void Show();
         void Hide();
         bool IsVisible() const { return visible_; }
         void Shutdown();
@@ -56,6 +68,10 @@ namespace wxl_ui
         void DrawSearch();
         void DrawDetails();
         void DrawPlayer();
+        void PlayCurrentItem();
+        void OpenItem(const wxl_plex::PlexItem& item);
+        void NavigateBack();
+        void LoadPage(int offset);
 
         HWND window_ = nullptr;
         ID3D11Device* device_ = nullptr;
@@ -70,10 +86,17 @@ namespace wxl_ui
         wxl_plex::PlexItem playingItem_;
         wxl_plex::PlexPlayback playback_;
         wxl_ui::NativeUiState state_;
+        std::vector<wxl_plex::PlexItem> rootItems_;
+        std::vector<wxl_plex::PlexItem> browseStack_;
+        std::string activeSearch_;
         char search_[256]{};
         DWORD lastTimelineAt_ = 0;
         bool paused_ = false;
         bool initialized_ = false;
         bool visible_ = true;
+        double lastPositionSeconds_ = 0.0;
+        bool browsingWatchlist_ = false;
+        bool searchActive_ = false;
+        std::string status_ = "Starting Plex helper.";
     };
 }
