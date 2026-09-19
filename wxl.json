@@ -12,7 +12,7 @@
   },
   "deploy": {
     "mode": "release",
-    "match": "wxl-azeroth-plex-*.zip"
+    "match": "wxl-azeroth-plex.zip"
   },
   "listing": {
     "title": "Azeroth Plex",
