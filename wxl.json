@@ -17,10 +17,18 @@
   "listing": {
     "title": "Azeroth Plex",
     "tagline": "Browse Plex in-game with Watchlist, TV navigation, and world-space playback.",
-    "description": "README.md",
-    "gallery": [],
+    "description": "store/description.md",
+    "cover": "store/cover.png",
+    "gallery": [
+      "store/gallery/Preview1.png",
+      "store/gallery/Preview2.png",
+      "store/gallery/Preview3.png",
+      "store/gallery/Preview4.png",
+      "store/gallery/Preview5.png",
+      "store/gallery/Preview6.png"
+    ],
     "categories": ["tools", "media"],
-    "accent": "#e5a00d"
+    "accent": "#00FFFF"
   },
   "license": "GPL-3.0-or-later",
   "signature": null
