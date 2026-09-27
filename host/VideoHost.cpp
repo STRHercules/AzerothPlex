@@ -5,7 +5,10 @@
 #include "FramePublisher.hpp"
 #include "MpvPlayer.hpp"
 #include "NativeUi.hpp"
+#include "PartyClient.hpp"
 #include "PlexClient.hpp"
+#include "SessionStore.hpp"
+#include "SyncController.hpp"
 #include "VideoShared.hpp"
 #include "backends/imgui_impl_win32.h"
 
@@ -50,6 +53,9 @@ namespace
     wxl_frame::FramePublisher g_frames;
     wxl_mpv::MpvPlayer g_player;
     std::unique_ptr<wxl_plex::PlexClient> g_plex;
+    std::unique_ptr<wxl_party::SessionStore> g_partyStore;
+    std::unique_ptr<wxl_party::PartyClient> g_party;
+    wxl_party::SyncController g_sync;
     wxl_ui::NativeUi g_ui;
 
     DWORD ParseParentPid(const wchar_t* commandLine)
@@ -300,6 +306,7 @@ namespace
         g_player.PollEvents(events);
         g_ui.HandleMpvEvents(events);
         g_ui.PumpPlexEvents();
+        g_ui.PumpPartyEvents();
         ProcessUiCommand();
         g_player.Render();
         if (g_player.CopyFrameTo(g_frame.data(), wxl_video_shared::kStride))
@@ -374,7 +381,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         return 3;
     }
 
-    g_plex = std::make_unique<wxl_plex::PlexClient>(LocalDataDirectory());
+    const std::filesystem::path dataDirectory = LocalDataDirectory();
+    g_plex = std::make_unique<wxl_plex::PlexClient>(dataDirectory);
+    g_partyStore = std::make_unique<wxl_party::SessionStore>(dataDirectory);
+    const wxl_party::SessionSettings partySettings = g_partyStore->Load();
+    g_party = std::make_unique<wxl_party::PartyClient>(partySettings);
     if (!g_player.Initialize(g_window, g_device.Get(), g_context.Get()) ||
         !g_ui.Initialize(g_window, g_device.Get(), g_context.Get(), *g_plex, g_player, g_frames))
     {
@@ -393,6 +404,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         return 4;
     }
 
+    g_ui.ConfigureParty(*g_party, g_sync, *g_partyStore, partySettings);
     g_ui.Hide();
     SetTimer(g_window, kTickTimer, kTickIntervalMs, nullptr);
     if (g_parentProcess) CreateThread(nullptr, 0, WatchParentProcess, nullptr, 0, nullptr);
@@ -404,8 +416,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         DispatchMessageW(&message);
     }
 
+    if (g_party) g_party->Disconnect();
     g_ui.Shutdown();
     g_player.Shutdown();
+    g_party.reset();
+    g_partyStore.reset();
     g_plex.reset();
     g_frames.Close();
     g_renderTarget.Reset();

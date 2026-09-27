@@ -17,12 +17,21 @@ int main()
     CHECK(state.error == "stream failed");
 
     wxl_plex::PlexEvent watchlist{wxl_plex::PlexEvent::Kind::Watchlist};
-    watchlist.items.push_back({"10", "plex://movie/test", "Watchlisted", "movie"});
+    wxl_plex::PlexItem watchlisted;
+    watchlisted.ratingKey = "10";
+    watchlisted.guid = "plex://movie/test";
+    watchlisted.title = "Watchlisted";
+    watchlisted.type = "movie";
+    watchlist.items.push_back(watchlisted);
     state.Apply(watchlist);
     CHECK(state.watchlist.size() == 1);
 
     wxl_plex::PlexEvent children{wxl_plex::PlexEvent::Kind::Children};
-    children.items.push_back({"11", "", "Season 1", "season"});
+    wxl_plex::PlexItem season;
+    season.ratingKey = "11";
+    season.title = "Season 1";
+    season.type = "season";
+    children.items.push_back(season);
     state.Apply(children);
     CHECK(state.items.size() == 1);
     CHECK(state.items[0].type == "season");

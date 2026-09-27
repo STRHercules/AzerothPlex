@@ -23,6 +23,17 @@ namespace wxl_mpv
                positionSeconds * 1000.0 + 2000.0 < durationMs;
     }
 
+    double ClampPlaybackSpeed(double requested)
+    {
+        if (!std::isfinite(requested)) return 1.0;
+        return std::clamp(requested, 0.25, 4.0);
+    }
+
+    double EffectivePlaybackSpeed(double userSpeed, double syncCorrection)
+    {
+        return ClampPlaybackSpeed(ClampPlaybackSpeed(userSpeed) * std::clamp(syncCorrection, 0.95, 1.05));
+    }
+
     struct MpvPlayer::Api
     {
         using Create = mpv_handle* (*)();
@@ -224,6 +235,23 @@ namespace wxl_mpv
         SetProperty("volume", std::to_string(std::clamp(percent, 0, 100)));
     }
 
+    void MpvPlayer::ApplySpeed()
+    {
+        SetProperty("speed", std::to_string(EffectivePlaybackSpeed(userSpeed_, syncCorrection_)));
+    }
+
+    void MpvPlayer::SetPlaybackSpeed(double speed)
+    {
+        userSpeed_ = ClampPlaybackSpeed(speed);
+        ApplySpeed();
+    }
+
+    void MpvPlayer::SetSyncCorrection(double factor)
+    {
+        syncCorrection_ = std::clamp(factor, 0.95, 1.05);
+        ApplySpeed();
+    }
+
     void MpvPlayer::SetAudioTrack(int trackId)
     {
         SetProperty("aid", trackId < 0 ? "no" : std::to_string(trackId));
@@ -281,6 +309,19 @@ namespace wxl_mpv
             event.positionSeconds = lastPositionSeconds_;
             api_->free(position);
             events.push_back(std::move(event));
+        }
+
+        char* aspect = api_->getPropertyString(handle_, "video-params/aspect");
+        if (aspect)
+        {
+            try
+            {
+                const double parsed = std::stod(aspect);
+                if (std::isfinite(parsed) && parsed > 0.2 && parsed < 8.0)
+                    videoAspectRatio_ = parsed;
+            }
+            catch (...) {}
+            api_->free(aspect);
         }
     }
 

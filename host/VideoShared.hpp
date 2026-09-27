@@ -67,7 +67,7 @@ namespace wxl_video_shared
 
     constexpr wchar_t kUiMappingName[] = L"Local\\WXLVideoCinemaUi-v1";
     constexpr uint32_t kUiMagic = 0x55565857u; // "WXVU"
-    constexpr uint32_t kUiVersion = 1;
+    constexpr uint32_t kUiVersion = 2;
     constexpr size_t kUiTextBytes = 256;
     constexpr size_t kUiErrorBytes = 192;
     constexpr size_t kUiStatusBytes = 192;
@@ -78,6 +78,10 @@ namespace wxl_video_shared
     constexpr size_t kUiMaxSections = 32;
     constexpr size_t kUiMaxItems = 64;
     constexpr size_t kUiMaxStreams = 32;
+    constexpr size_t kUiMaxPartyMembers = 32;
+    constexpr size_t kUiMaxPartyQueue = 32;
+    constexpr size_t kUiMaxPublicRooms = 16;
+    constexpr size_t kUiMaxMarkers = 4;
 
     enum class UiView : LONG
     {
@@ -88,6 +92,9 @@ namespace wxl_video_shared
         Search,
         Details,
         Player,
+        Party,
+        Queue,
+        Settings,
     };
 
     enum class UiCommand : LONG
@@ -110,6 +117,29 @@ namespace wxl_video_shared
         NavigateBack,
         NextPage,
         PreviousPage,
+        OpenHomeSection,
+        SetPlaybackSpeed,
+        SkipMarker,
+        PlayNextEpisode,
+        CancelAutoplay,
+        CreateParty,
+        CreatePublicParty,
+        JoinParty,
+        LeaveParty,
+        RefreshPublicRooms,
+        JoinPublicRoom,
+        SetPartyPermissionMode,
+        SetPartySyncAudio,
+        SetPartySyncSubtitles,
+        StartReadyCheck,
+        SetReadyState,
+        AddCurrentToQueue,
+        RemoveQueueItem,
+        MoveQueueItem,
+        PlayQueueItem,
+        RespondControlRequest,
+        SetDisconnectPolicy,
+        ShareCinemaSettings,
     };
 
     struct UiServerSnapshot
@@ -146,6 +176,58 @@ namespace wxl_video_shared
         char title[128]{};
     };
 
+    struct UiMarkerSnapshot
+    {
+        char type[32]{};
+        LONG startMs = 0;
+        LONG endMs = 0;
+    };
+
+    struct UiPartyMemberSnapshot
+    {
+        char id[128]{};
+        char name[64]{};
+        LONG role = 0;
+        LONG connected = 0;
+        LONG ready = 0;
+    };
+
+    struct UiPartyQueueSnapshot
+    {
+        char title[128]{};
+        char type[32]{};
+        LONG resolved = 0;
+        uint64_t order = 0;
+    };
+
+    struct UiPublicRoomSnapshot
+    {
+        char code[16]{};
+        char title[128]{};
+        char hostName[64]{};
+        LONG memberCount = 0;
+    };
+
+    struct UiCinemaSnapshot
+    {
+        char presetName[64]{};
+        float width = 8.0f;
+        float heightOffset = 0.5f;
+        float rotationDegrees = 0.0f;
+        float pinnedX = 0.64f;
+        float pinnedY = 0.04f;
+        float pinnedWidth = 0.32f;
+        float depthOffset = -0.010f;
+        float audioRange = 60.0f;
+        LONG pinned = 0;
+        LONG depthOcclusion = 1;
+        LONG distanceAudio = 1;
+        LONG aspectRatioMode = 0;
+        LONG fitMode = 0;
+        LONG frameStyle = 0;
+        LONG ambientLighting = 0;
+    };
+
     // ponytail: one latest-command slot is enough for the 16 ms panel tick; add a queue if bursts matter.
     struct UiCommandPacket
     {
@@ -173,15 +255,50 @@ namespace wxl_video_shared
         uint32_t playbackPositionMs = 0;
         uint32_t playbackDurationMs = 0;
         uint32_t playbackPaused = 0;
+        uint32_t markerCount = 0;
+        uint32_t partyMemberCount = 0;
+        uint32_t partyQueueCount = 0;
+        uint32_t publicRoomCount = 0;
+        uint32_t partyConnectionState = 0;
+        uint32_t partyRole = 0;
+        uint32_t partyPermissionMode = 0;
+        uint32_t partySyncAudio = 0;
+        uint32_t partySyncSubtitles = 0;
+        uint32_t partyReadyCheckActive = 0;
+        uint32_t partyReconnectCount = 0;
+        uint32_t nextEpisodeAvailable = 0;
+        uint32_t autoplayRemainingMs = 0;
+        uint32_t playbackSpeedPermille = 1000;
+        float videoAspectRatio = 16.0f / 9.0f;
+        int64_t partyReadyStartAtMs = 0;
+        int64_t partyRelayRttMs = 0;
+        int64_t partyClockOffsetMs = 0;
+        int64_t partyDriftMs = 0;
+        uint64_t partyRoomEpoch = 0;
+        uint64_t partySequence = 0;
         UiItemSnapshot item{};
+        UiItemSnapshot playingItem{};
+        UiItemSnapshot nextEpisode{};
+        UiCinemaSnapshot sharedCinema{};
         char error[kUiErrorBytes]{};
         char status[kUiStatusBytes]{};
         char watchlistError[kUiErrorBytes]{};
         char browseTitle[128]{};
+        char partyRoomCode[16]{};
+        char partyHostName[64]{};
+        char partyError[kUiErrorBytes]{};
+        char partyCorrection[32]{};
+        char partyMediaMatch[64]{};
+        char controlRequest[64]{};
+        char controlRequestId[128]{};
         UiServerSnapshot servers[kUiMaxServers]{};
         UiSectionSnapshot sections[kUiMaxSections]{};
         UiItemSnapshot items[kUiMaxItems]{};
         UiStreamSnapshot streams[kUiMaxStreams]{};
+        UiMarkerSnapshot markers[kUiMaxMarkers]{};
+        UiPartyMemberSnapshot partyMembers[kUiMaxPartyMembers]{};
+        UiPartyQueueSnapshot partyQueue[kUiMaxPartyQueue]{};
+        UiPublicRoomSnapshot publicRooms[kUiMaxPublicRooms]{};
     };
 
     struct UiBridge

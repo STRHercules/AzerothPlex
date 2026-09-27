@@ -41,6 +41,29 @@ The pinned x86 libmpv build includes the normal FFmpeg audio/video decoders;
 separate codec DLLs are not required. If a direct stream ends early, the worker
 reports the mpv error and retries through Plex transcoding when possible.
 
+## Watch Together
+
+AzerothPlex includes a state-only Watch Together relay. Every viewer streams the
+media directly from their own Plex server; Plex credentials, authenticated media
+URLs, decoded frames, and media files are never sent through the relay.
+
+For local development, start the relay from `relay/` and leave the default
+`ws://127.0.0.1:17777/ws` endpoint in place. In the in-game Plex panel, open
+**Watch Together**, create a private room, then share its short `AZ-....` code.
+Guests resolve the host's media against their own Plex library and follow the
+relay's authoritative playback state.
+
+Watch Together currently includes host/shared/request-control modes, optional
+semantic audio/subtitle matching, a shared queue, all-ready synchronized starts,
+host migration, reconnect grace, disconnect policies, shared cinema layout,
+relay RTT/drift diagnostics, and a compact mini-player. The mini-player includes
+10-second seek controls and its enabled state is saved locally.
+
+Public room discovery is implemented but intentionally disabled by default. The
+roadmap requires authentication plus abuse/moderation controls before public
+rooms are considered production-ready. See `relay/README.md` for the explicit
+development opt-in.
+
 The Plex token is protected with Windows DPAPI under
 `%LOCALAPPDATA%\WarcraftXL\plex-player`. The account password is never entered
 into AzerothPlex and tokens are not sent through WarcraftXL shared memory.

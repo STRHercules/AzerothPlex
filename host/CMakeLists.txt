@@ -19,6 +19,7 @@ set(IMGUI_SOURCES
 
 add_executable(wxl-video-host WIN32
     VideoHost.cpp FramePublisher.cpp MpvPlayer.cpp PlexClient.cpp TokenStore.cpp NativeUi.cpp
+    PartyTypes.cpp PartyProtocol.cpp SyncController.cpp SessionStore.cpp PartyClient.cpp
     ${IMGUI_SOURCES})
 target_include_directories(wxl-video-host PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
@@ -29,11 +30,13 @@ target_include_directories(wxl-video-host PRIVATE
 target_compile_definitions(wxl-video-host PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(wxl-video-host PRIVATE
     d3d11 dxgi d3dcompiler user32 gdi32 winhttp crypt32 shell32 ole32 oleaut32)
-if(MPV_ROOT)
+if(MPV_ROOT AND EXISTS "${MPV_ROOT}/libmpv-2.dll")
     add_custom_command(TARGET wxl-video-host POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${MPV_ROOT}/libmpv-2.dll"
             "$<TARGET_FILE_DIR:wxl-video-host>/libmpv-2.dll")
+elseif(MPV_ROOT)
+    message(WARNING "MPV_ROOT does not contain libmpv-2.dll; host will build without staging the runtime DLL")
 endif()
 
 add_executable(mpv_probe tests/MpvProbe.cpp)
@@ -68,7 +71,8 @@ target_compile_definitions(mpv_player_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
 target_link_libraries(mpv_player_tests PRIVATE d3d11 dxgi user32)
 add_test(NAME mpv_player_tests COMMAND mpv_player_tests)
 
-add_executable(native_ui_tests tests/NativeUiTests.cpp NativeUi.cpp MpvPlayer.cpp PlexClient.cpp TokenStore.cpp FramePublisher.cpp ${IMGUI_SOURCES})
+add_executable(native_ui_tests tests/NativeUiTests.cpp NativeUi.cpp MpvPlayer.cpp PlexClient.cpp TokenStore.cpp FramePublisher.cpp
+    PartyTypes.cpp PartyProtocol.cpp SyncController.cpp SessionStore.cpp PartyClient.cpp ${IMGUI_SOURCES})
 target_include_directories(native_ui_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
     "${MPV_ROOT}/include"
@@ -84,3 +88,17 @@ target_include_directories(ui_bridge_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 target_compile_definitions(ui_bridge_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(ui_bridge_tests PRIVATE user32)
 add_test(NAME ui_bridge_tests COMMAND ui_bridge_tests)
+
+add_executable(party_tests tests/PartyTests.cpp PartyTypes.cpp PartyProtocol.cpp SyncController.cpp)
+target_include_directories(party_tests PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}/third_party")
+target_compile_definitions(party_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+add_test(NAME party_tests COMMAND party_tests)
+
+add_executable(session_store_tests tests/SessionStoreTests.cpp SessionStore.cpp PartyTypes.cpp)
+target_include_directories(session_store_tests PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}/third_party")
+target_compile_definitions(session_store_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+add_test(NAME session_store_tests COMMAND session_store_tests)

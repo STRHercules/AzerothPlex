@@ -17,6 +17,15 @@ namespace wxl_plex
 {
     constexpr int kPlexPageSize = 48;
 
+    enum class PlexHomeKind
+    {
+        ContinueWatching,
+        RecentlyAddedMovies,
+        RecentlyAddedTV,
+        OnDeck,
+        RecentlyWatched,
+    };
+
     bool ParsePinJson(std::string_view json, PinAuth& result);
     std::vector<PlexServer> ParseResourcesXml(std::string_view xml);
     std::vector<PlexSection> ParseSectionsXml(std::string_view xml);
@@ -32,6 +41,7 @@ namespace wxl_plex
     PlexItem ParseMetadataXml(std::string_view xml);
     std::string BuildChildrenPath(std::string_view ratingKey);
     std::string BuildWatchlistPath();
+    std::string BuildHomePath(PlexHomeKind kind);
     PlexPlayback BuildDirectPlayback(const PlexItem& item, const PlexServer& server);
     PlexPlayback BuildTranscodePlayback(const PlexItem& item, const PlexServer& server,
                                         std::string_view sessionId);
@@ -50,7 +60,10 @@ namespace wxl_plex
             Children,
             Watchlist,
             WatchlistResolved,
+            HomeItems,
             Metadata,
+            NextEpisode,
+            PartyMediaResolved,
             Error,
         };
 
@@ -64,6 +77,7 @@ namespace wxl_plex
         int pageOffset = 0;
         int pageSize = 0;
         int pageTotalSize = 0;
+        PlexHomeKind homeKind = PlexHomeKind::ContinueWatching;
     };
 
     class PlexClient final
@@ -75,6 +89,8 @@ namespace wxl_plex
         void StartLogin();
         void LoadResources();
         void LoadWatchlist(int offset = 0, int size = kPlexPageSize);
+        void LoadHome(const PlexServer& server, PlexHomeKind kind,
+                      int offset = 0, int size = kPlexPageSize);
         void LoadSections(const PlexServer& server);
         void LoadItems(const PlexServer& server, const PlexSection& section,
                        int offset = 0, int size = kPlexPageSize);
@@ -84,6 +100,9 @@ namespace wxl_plex
         void Search(const PlexServer& server, std::string query,
                     int offset = 0, int size = kPlexPageSize);
         void LoadMetadata(const PlexServer& server, const PlexItem& item);
+        void LoadNextEpisode(const PlexServer& server, const PlexItem& item);
+        void ResolvePartyMedia(const PlexServer& server, const PlexItem& hint,
+                               std::string remoteServerIdentifier = {});
         void ReportTimeline(const PlexServer& server, const PlexItem& item,
                             TimelineState state, int positionMs);
         void SignOut();

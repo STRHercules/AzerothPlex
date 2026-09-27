@@ -11,6 +11,7 @@
 #include <charconv>
 #include <cctype>
 #include <condition_variable>
+#include <cmath>
 #include <cwchar>
 #include <filesystem>
 #include <mutex>
@@ -106,11 +107,23 @@ namespace wxl_plex
             result.title = Attribute(tag, "title");
             result.type = Attribute(tag, "type");
             result.grandparentTitle = Attribute(tag, "grandparentTitle");
+            result.parentRatingKey = Attribute(tag, "parentRatingKey");
+            result.grandparentRatingKey = Attribute(tag, "grandparentRatingKey");
             result.thumb = Attribute(tag, "thumb");
+            result.year = IntegerAttribute(tag, "year");
+            result.parentIndex = IntegerAttribute(tag, "parentIndex");
+            result.index = IntegerAttribute(tag, "index");
             result.viewOffsetMs = IntegerAttribute(tag, "viewOffset");
             result.durationMs = IntegerAttribute(tag, "duration");
             result.viewed = IntegerAttribute(tag, "viewCount") > 0;
             return result;
+        }
+
+        void ApplyExternalGuid(PlexItem& item, std::string_view id)
+        {
+            if (id.rfind("imdb://", 0) == 0) item.imdbId = std::string(id.substr(7));
+            else if (id.rfind("tmdb://", 0) == 0) item.tmdbId = std::string(id.substr(7));
+            else if (id.rfind("tvdb://", 0) == 0) item.tvdbId = std::string(id.substr(7));
         }
 
         bool IsTagBoundary(char value)
@@ -307,8 +320,10 @@ namespace wxl_plex
             const size_t close = xml.find("</Device>", deviceEnd);
             const size_t blockEnd = close == std::string_view::npos ? xml.size() : close;
             const std::string_view device = xml.substr(deviceStart, blockEnd - deviceStart);
-            const std::string name = Attribute(xml.substr(deviceStart, deviceEnd - deviceStart), "name");
-            const std::string token = Attribute(xml.substr(deviceStart, deviceEnd - deviceStart), "accessToken");
+            const std::string_view deviceTag = xml.substr(deviceStart, deviceEnd - deviceStart);
+            const std::string name = Attribute(deviceTag, "name");
+            const std::string token = Attribute(deviceTag, "accessToken");
+            const std::string machineIdentifier = Attribute(deviceTag, "clientIdentifier");
 
             size_t connectionStart = device.find("<Connection");
             PlexServer best;
@@ -329,6 +344,7 @@ namespace wxl_plex
                         bestRank = rank;
                         best.name = name;
                         best.accessToken = token;
+                        best.machineIdentifier = machineIdentifier;
                         best.uri = Attribute(connection, "uri");
                         if (best.uri.empty())
                             best.uri = MakeServerUri(protocol, Attribute(connection, "address"),
@@ -417,6 +433,15 @@ namespace wxl_plex
         const std::string_view tag = xml.substr(start, tagEnd - start);
         result = ParseItemTag(tag);
 
+        size_t guidStart = tagEnd;
+        while ((guidStart = xml.find("<Guid", guidStart)) != std::string_view::npos)
+        {
+            const size_t guidEnd = xml.find('>', guidStart);
+            if (guidEnd == std::string_view::npos) break;
+            ApplyExternalGuid(result, Attribute(xml.substr(guidStart, guidEnd - guidStart), "id"));
+            guidStart = guidEnd + 1;
+        }
+
         const size_t partStart = xml.find("<Part", tagEnd);
         if (partStart != std::string_view::npos)
         {
@@ -424,20 +449,43 @@ namespace wxl_plex
             if (partEnd != std::string_view::npos)
             {
                 result.partKey = Attribute(xml.substr(partStart, partEnd - partStart), "key");
+                const size_t partClose = xml.find("</Part", partEnd);
                 size_t streamStart = partEnd;
                 while ((streamStart = xml.find("<Stream", streamStart)) != std::string_view::npos)
                 {
                     const size_t streamEnd = xml.find('>', streamStart);
-                    if (streamEnd == std::string_view::npos || streamStart > xml.find("</Part", partEnd))
+                    if (streamEnd == std::string_view::npos ||
+                        (partClose != std::string_view::npos && streamStart > partClose))
                         break;
                     const std::string_view stream = xml.substr(streamStart, streamEnd - streamStart);
-                    result.streams.push_back({IntegerAttribute(stream, "id"),
-                                              IntegerAttribute(stream, "streamType"),
-                                              Attribute(stream, "language"),
-                                              Attribute(stream, "title")});
+                    PlexStream parsed;
+                    parsed.id = IntegerAttribute(stream, "id");
+                    parsed.streamType = IntegerAttribute(stream, "streamType");
+                    parsed.language = Attribute(stream, "language");
+                    parsed.title = Attribute(stream, "title");
+                    parsed.codec = Attribute(stream, "codec");
+                    parsed.forced = IntegerAttribute(stream, "forced") != 0;
+                    parsed.hearingImpaired = IntegerAttribute(stream, "hearingImpaired") != 0;
+                    parsed.selected = IntegerAttribute(stream, "selected") != 0;
+                    result.streams.push_back(std::move(parsed));
                     streamStart = streamEnd + 1;
                 }
             }
+        }
+
+        size_t markerStart = tagEnd;
+        while ((markerStart = xml.find("<Marker", markerStart)) != std::string_view::npos)
+        {
+            const size_t markerEnd = xml.find('>', markerStart);
+            if (markerEnd == std::string_view::npos) break;
+            const std::string_view marker = xml.substr(markerStart, markerEnd - markerStart);
+            PlexMarker parsed;
+            parsed.type = Attribute(marker, "type");
+            parsed.startMs = IntegerAttribute(marker, "startTimeOffset");
+            parsed.endMs = IntegerAttribute(marker, "endTimeOffset");
+            if (!parsed.type.empty() && parsed.endMs >= parsed.startMs)
+                result.markers.push_back(std::move(parsed));
+            markerStart = markerEnd + 1;
         }
         return result;
     }
@@ -450,6 +498,24 @@ namespace wxl_plex
     std::string BuildWatchlistPath()
     {
         return "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1";
+    }
+
+    std::string BuildHomePath(PlexHomeKind kind)
+    {
+        switch (kind)
+        {
+        case PlexHomeKind::ContinueWatching:
+            return "/hubs/home/continueWatching?includeGuids=1";
+        case PlexHomeKind::RecentlyAddedMovies:
+            return "/library/recentlyAdded?type=1&includeGuids=1";
+        case PlexHomeKind::RecentlyAddedTV:
+            return "/library/recentlyAdded?type=4&includeGuids=1";
+        case PlexHomeKind::OnDeck:
+            return "/library/onDeck?includeGuids=1";
+        case PlexHomeKind::RecentlyWatched:
+            return "/status/sessions/history/all?includeGuids=1";
+        }
+        return "/hubs/home/continueWatching?includeGuids=1";
     }
 
     PlexPlayback BuildDirectPlayback(const PlexItem& item, const PlexServer& server)
@@ -654,6 +720,34 @@ namespace wxl_plex
         });
     }
 
+    void PlexClient::LoadHome(const PlexServer& server, PlexHomeKind kind, int offset, int size)
+    {
+        Enqueue([this, server, kind, offset, size](std::stop_token stop) {
+            if (stop.stop_requested()) return;
+            const std::string token = server.accessToken.empty() ? token_ : server.accessToken;
+            const HttpResponse response = Request(
+                JoinUrl(server, BuildHomePath(kind)), L"GET", token, clientId_,
+                false, {}, offset, size);
+            if (response.status < 200 || response.status >= 300)
+            {
+                PlexEvent error{PlexEvent::Kind::Error};
+                error.message = "The selected Plex home section could not be loaded";
+                error.preserveView = true;
+                error.homeKind = kind;
+                Emit(std::move(error));
+                return;
+            }
+            const PlexPage page = ParseItemsPageXml(response.body);
+            PlexEvent event{PlexEvent::Kind::HomeItems};
+            event.items = page.items;
+            event.homeKind = kind;
+            event.pageOffset = page.offset;
+            event.pageSize = page.size;
+            event.pageTotalSize = page.totalSize;
+            Emit(std::move(event));
+        });
+    }
+
     void PlexClient::LoadSections(const PlexServer& server)
     {
         Enqueue([this, server](std::stop_token) {
@@ -785,6 +879,145 @@ namespace wxl_plex
             }
             PlexEvent event{PlexEvent::Kind::Metadata};
             event.item = ParseMetadataXml(response.body);
+            Emit(std::move(event));
+        });
+    }
+
+    void PlexClient::LoadNextEpisode(const PlexServer& server, const PlexItem& item)
+    {
+        Enqueue([this, server, item](std::stop_token stop) {
+            PlexEvent event{PlexEvent::Kind::NextEpisode};
+            if (stop.stop_requested() || item.type != "episode" || item.grandparentRatingKey.empty())
+            {
+                event.message = "No next episode is available.";
+                Emit(std::move(event));
+                return;
+            }
+            const std::string token = server.accessToken.empty() ? token_ : server.accessToken;
+            const HttpResponse response = Request(
+                JoinUrl(server, "/library/metadata/" + item.grandparentRatingKey + "/allLeaves"),
+                L"GET", token, clientId_);
+            if (response.status < 200 || response.status >= 300)
+            {
+                event.message = "The next episode could not be loaded.";
+                Emit(std::move(event));
+                return;
+            }
+            const auto episodes = ParseItemsXml(response.body);
+            size_t current = episodes.size();
+            for (size_t index = 0; index < episodes.size(); ++index)
+            {
+                if ((!item.ratingKey.empty() && episodes[index].ratingKey == item.ratingKey) ||
+                    (item.parentIndex > 0 && item.index > 0 &&
+                     episodes[index].parentIndex == item.parentIndex && episodes[index].index == item.index))
+                {
+                    current = index;
+                    break;
+                }
+            }
+            if (current == episodes.size() || current + 1 >= episodes.size())
+            {
+                event.message = "No next episode is available.";
+                Emit(std::move(event));
+                return;
+            }
+            const PlexItem& next = episodes[current + 1];
+            const HttpResponse metadata = Request(
+                JoinUrl(server, "/library/metadata/" + next.ratingKey), L"GET", token, clientId_);
+            if (metadata.status >= 200 && metadata.status < 300)
+                event.item = ParseMetadataXml(metadata.body);
+            if (event.item.ratingKey.empty()) event.message = "The next episode could not be resolved.";
+            Emit(std::move(event));
+        });
+    }
+
+    void PlexClient::ResolvePartyMedia(const PlexServer& server, const PlexItem& hint,
+                                       std::string remoteServerIdentifier)
+    {
+        Enqueue([this, server, hint, remoteServerIdentifier = std::move(remoteServerIdentifier)](std::stop_token stop) {
+            PlexEvent event{PlexEvent::Kind::PartyMediaResolved};
+            if (stop.stop_requested()) return;
+            const std::string token = server.accessToken.empty() ? token_ : server.accessToken;
+
+            auto loadMetadata = [&](const PlexItem& candidate) -> PlexItem {
+                if (candidate.ratingKey.empty()) return {};
+                const HttpResponse metadata = Request(
+                    JoinUrl(server, "/library/metadata/" + candidate.ratingKey), L"GET", token, clientId_);
+                return metadata.status >= 200 && metadata.status < 300
+                    ? ParseMetadataXml(metadata.body) : PlexItem{};
+            };
+
+            if (!remoteServerIdentifier.empty() &&
+                remoteServerIdentifier == server.machineIdentifier && !hint.ratingKey.empty())
+            {
+                event.item = loadMetadata(hint);
+                if (!event.item.ratingKey.empty())
+                {
+                    Emit(std::move(event));
+                    return;
+                }
+            }
+
+            std::vector<std::string> guids;
+            if (!hint.guid.empty()) guids.push_back(hint.guid);
+            if (!hint.tmdbId.empty()) guids.push_back("tmdb://" + hint.tmdbId);
+            if (!hint.tvdbId.empty()) guids.push_back("tvdb://" + hint.tvdbId);
+            if (!hint.imdbId.empty()) guids.push_back("imdb://" + hint.imdbId);
+            for (const auto& guid : guids)
+            {
+                const HttpResponse response = Request(
+                    JoinUrl(server, "/library/all?guid=" + UrlEncode(guid)), L"GET", token, clientId_);
+                const auto matches = ParseItemsXml(response.body);
+                if (response.status >= 200 && response.status < 300 && matches.size() == 1)
+                {
+                    event.item = loadMetadata(matches.front());
+                    if (!event.item.ratingKey.empty())
+                    {
+                        Emit(std::move(event));
+                        return;
+                    }
+                }
+            }
+
+            if (!hint.title.empty())
+            {
+                const HttpResponse response = Request(
+                    JoinUrl(server, "/hubs/search?query=" + UrlEncode(hint.title)), L"GET", token, clientId_);
+                const auto matches = ParseItemsXml(response.body);
+                std::vector<PlexItem> candidates;
+                for (const auto& candidate : matches)
+                {
+                    if (!hint.type.empty() && candidate.type != hint.type) continue;
+                    if (hint.year > 0 && candidate.year > 0 && hint.year != candidate.year) continue;
+                    if (hint.type == "episode")
+                    {
+                        if (hint.parentIndex > 0 && candidate.parentIndex > 0 &&
+                            hint.parentIndex != candidate.parentIndex) continue;
+                        if (hint.index > 0 && candidate.index > 0 && hint.index != candidate.index) continue;
+                        if (!hint.grandparentTitle.empty() && !candidate.grandparentTitle.empty() &&
+                            hint.grandparentTitle != candidate.grandparentTitle) continue;
+                    }
+                    if (hint.durationMs > 0 && candidate.durationMs > 0)
+                    {
+                        const int tolerance = std::max(5000, std::min(hint.durationMs, candidate.durationMs) / 100);
+                        if (std::abs(hint.durationMs - candidate.durationMs) > tolerance) continue;
+                    }
+                    candidates.push_back(candidate);
+                }
+                if (candidates.size() == 1)
+                {
+                    event.item = loadMetadata(candidates.front());
+                    if (!event.item.ratingKey.empty())
+                    {
+                        Emit(std::move(event));
+                        return;
+                    }
+                }
+                if (candidates.size() > 1)
+                    event.message = "Party media matched multiple Plex items; choose it manually.";
+            }
+            if (event.message.empty())
+                event.message = "This party media could not be matched in your Plex library.";
             Emit(std::move(event));
         });
     }

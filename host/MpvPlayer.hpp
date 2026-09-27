@@ -18,6 +18,8 @@ namespace wxl_mpv
 {
     int ClampSeekMilliseconds(int requestedMs, int durationMs);
     bool IsPrematureEnd(int endReason, int durationMs, double positionSeconds);
+    double ClampPlaybackSpeed(double requested);
+    double EffectivePlaybackSpeed(double userSpeed, double syncCorrection);
 
     struct MpvEvent
     {
@@ -51,6 +53,11 @@ namespace wxl_mpv
         void Stop();
         void Seek(double seconds);
         void SetVolume(int percent);
+        void SetPlaybackSpeed(double speed);
+        void SetSyncCorrection(double factor);
+        double PlaybackSpeed() const { return userSpeed_; }
+        double SyncCorrection() const { return syncCorrection_; }
+        double VideoAspectRatio() const { return videoAspectRatio_; }
         void SetAudioTrack(int trackId);
         void SetSubtitleTrack(int trackId);
         void PollEvents(std::vector<MpvEvent>& events);
@@ -64,6 +71,7 @@ namespace wxl_mpv
         bool LoadApi();
         void Command(const std::vector<std::string>& arguments);
         void SetProperty(std::string name, std::string value);
+        void ApplySpeed();
 
         std::unique_ptr<Api> api_;
         HMODULE module_ = nullptr;
@@ -72,5 +80,8 @@ namespace wxl_mpv
         uint8_t* frame_ = nullptr;
         bool hasFrame_ = false;
         double lastPositionSeconds_ = 0.0;
+        double userSpeed_ = 1.0;
+        double syncCorrection_ = 1.0;
+        double videoAspectRatio_ = 16.0 / 9.0;
     };
 }

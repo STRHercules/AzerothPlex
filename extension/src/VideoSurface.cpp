@@ -13,6 +13,7 @@
 #include <d3d9.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -46,6 +47,48 @@ namespace wxl_video_screen
             D3DCOLOR color;
             float u, v;
         };
+
+        bool CopyClipboardText(std::string_view text)
+        {
+            if (text.empty() || !OpenClipboard(nullptr)) return false;
+            EmptyClipboard();
+            HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
+            if (!memory)
+            {
+                CloseClipboard();
+                return false;
+            }
+            void* target = GlobalLock(memory);
+            if (!target)
+            {
+                GlobalFree(memory);
+                CloseClipboard();
+                return false;
+            }
+            std::memcpy(target, text.data(), text.size());
+            static_cast<char*>(target)[text.size()] = '\0';
+            GlobalUnlock(memory);
+            const bool ok = SetClipboardData(CF_TEXT, memory) != nullptr;
+            if (!ok) GlobalFree(memory);
+            CloseClipboard();
+            return ok;
+        }
+
+        D3DCOLOR FrameColor(int style)
+        {
+            switch (style)
+            {
+            case 1: return 0xFF303030u; // Classic television.
+            case 2: return 0xFF3C6A35u; // Goblin.
+            case 3: return 0xFFB58B42u; // Gnomish brass.
+            case 4: return 0xFF5A241Eu; // Orcish.
+            case 5: return 0xFFD6A84Bu; // Blood elf.
+            case 6: return 0xFF62BFD4u; // Titan.
+            case 7: return 0xFF5B3A24u; // Tavern wood.
+            case 8: return 0xFF181818u; // Outdoor cinema.
+            default: return 0xFF101010u;
+            }
+        }
 
         void FormatTime(char* output, size_t size, uint32_t milliseconds)
         {
@@ -85,6 +128,8 @@ namespace wxl_video_screen
         ConnectControl();
         ConnectUi();
         LoadPlacement();
+        LoadUiPreferences();
+        LoadCinemaPresets();
         if (!api_->HookAttach || !api_->HookAttach(
                 "wxl-azeroth-plex.scene-clear",
                 wxl::game::gx::kSceneClearSeam,
@@ -420,6 +465,7 @@ namespace wxl_video_screen
                 static_cast<const wxl_video_shared::UiBridge*>(uiView_), snapshot))
             return false;
         uiState_ = snapshot;
+        ApplySharedCinema();
         return true;
     }
 
@@ -477,7 +523,8 @@ namespace wxl_video_screen
         right_[0] = -forwardY;
         right_[1] = forwardX;
         right_[2] = 0.0f;
-        const float height = width_ * 9.0f / 16.0f;
+        const float height = width_ / ScreenAspectRatio();
+        screenRotationDegrees_ = 0.0f;
         center_[0] = playerPosition[0] + forwardX * placeDistance_;
         center_[1] = playerPosition[1] + forwardY * placeDistance_;
         center_[2] = playerPosition[2] + bottomOffset_ + height * 0.5f;
@@ -502,6 +549,9 @@ namespace wxl_video_screen
         const float y = right_[0] * sine + right_[1] * cosine;
         right_[0] = x;
         right_[1] = y;
+        screenRotationDegrees_ += degrees;
+        while (screenRotationDegrees_ > 180.0f) screenRotationDegrees_ -= 360.0f;
+        while (screenRotationDegrees_ < -180.0f) screenRotationDegrees_ += 360.0f;
         SavePlacement();
     }
 
@@ -521,7 +571,9 @@ namespace wxl_video_screen
                << right_[0] << '\t' << right_[1] << '\t' << right_[2] << '\t'
                << width_ << '\t' << visible_ << '\t' << depthTest_ << '\t' << depthBias_
                << '\t' << pinned_ << '\t' << pinnedLeft_ << '\t' << pinnedTop_
-               << '\t' << pinnedWidth_ << '\n';
+               << '\t' << pinnedWidth_ << '\t' << aspectRatioMode_ << '\t' << fitMode_
+               << '\t' << frameStyle_ << '\t' << ambientLighting_ << '\t' << spatialAudio_
+               << '\t' << silentDistance_ << '\n';
         output.close();
         if (!output) return;
         MoveFileExW(temporary.c_str(), target.c_str(),
@@ -548,6 +600,12 @@ namespace wxl_video_screen
         float pinnedLeft = 0.64f;
         float pinnedTop = 0.04f;
         float pinnedWidth = 0.32f;
+        int aspectRatioMode = 0;
+        int fitMode = 0;
+        int frameStyle = 0;
+        int ambientLighting = 0;
+        int spatialAudio = 1;
+        float silentDistance = 60.0f;
         if (!std::getline(input, version, '\t') || version != "wxl-video-screen-v1" ||
             !(input >> map) || input.get() != '\t' ||
             !(input >> center[0]) || input.get() != '\t' ||
@@ -584,6 +642,12 @@ namespace wxl_video_screen
             input.get();
             if (!(input >> pinnedWidth)) pinnedWidth = 0.32f;
         }
+        if (input.peek() == '\t') { input.get(); if (!(input >> aspectRatioMode)) aspectRatioMode = 0; }
+        if (input.peek() == '\t') { input.get(); if (!(input >> fitMode)) fitMode = 0; }
+        if (input.peek() == '\t') { input.get(); if (!(input >> frameStyle)) frameStyle = 0; }
+        if (input.peek() == '\t') { input.get(); if (!(input >> ambientLighting)) ambientLighting = 0; }
+        if (input.peek() == '\t') { input.get(); if (!(input >> spatialAudio)) spatialAudio = 1; }
+        if (input.peek() == '\t') { input.get(); if (!(input >> silentDistance)) silentDistance = 60.0f; }
 
         const float rightLength = std::sqrt(right[0] * right[0] + right[1] * right[1]);
         if (map < 0 || !Finite3(center) || !(rightLength > 0.9f && rightLength < 1.1f) ||
@@ -596,6 +660,7 @@ namespace wxl_video_screen
         right_[1] = right[1] / rightLength;
         right_[2] = 0.0f;
         width_ = width;
+        screenRotationDegrees_ = 0.0f;
         visible_ = visible ? 1 : 0;
         depthTest_ = depth ? 1 : 0;
         depthBias_ = std::isfinite(depthBias) ? std::clamp(depthBias, -0.030f, 0.005f) : -0.010f;
@@ -604,8 +669,279 @@ namespace wxl_video_screen
         pinnedLeft_ = std::isfinite(pinnedLeft) ? pinnedLeft : 0.64f;
         pinnedTop_ = std::isfinite(pinnedTop) ? pinnedTop : 0.04f;
         wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
+        aspectRatioMode_ = std::clamp(aspectRatioMode, 0, 4);
+        fitMode_ = std::clamp(fitMode, 0, 3);
+        frameStyle_ = std::clamp(frameStyle, 0, 8);
+        ambientLighting_ = ambientLighting ? 1 : 0;
+        spatialAudio_ = spatialAudio ? 1 : 0;
+        silentDistance_ = std::isfinite(silentDistance) ? std::clamp(silentDistance, 10.0f, 200.0f) : 60.0f;
         placed_ = true;
         status_ = "Restored the saved world-screen placement.";
+    }
+
+    void VideoSurface::SaveUiPreferences()
+    {
+        const std::wstring directory = ExtensionDirectory();
+        if (directory.empty()) return;
+        const auto target = std::filesystem::path(directory) / L"ui-settings.tsv";
+        const auto temporary = target.wstring() + L".tmp";
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) return;
+        output << "azerothplex-ui-v1\t" << (miniPlayerEnabled_ ? 1 : 0) << '\n';
+        output.close();
+        if (output)
+            MoveFileExW(temporary.c_str(), target.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    }
+
+    void VideoSurface::LoadUiPreferences()
+    {
+        const std::wstring directory = ExtensionDirectory();
+        if (directory.empty()) return;
+        std::ifstream input(std::filesystem::path(directory) / L"ui-settings.tsv");
+        if (!input) return;
+        std::string version;
+        int miniPlayerEnabled = 1;
+        if (!std::getline(input, version, '\t') || version != "azerothplex-ui-v1" ||
+            !(input >> miniPlayerEnabled))
+            return;
+        miniPlayerEnabled_ = miniPlayerEnabled ? 1 : 0;
+    }
+
+    void VideoSurface::LoadCinemaPresets()
+    {
+        cinemaPresets_.clear();
+        auto builtIn = [this](const char* name, float width, int pinned, float pinnedWidth,
+                              float audioRange, int frameStyle) {
+            CinemaPreset preset;
+            preset.name = name;
+            preset.width = width;
+            preset.pinned = pinned;
+            preset.pinnedWidth = pinnedWidth;
+            preset.silentDistance = audioRange;
+            preset.frameStyle = frameStyle;
+            preset.builtIn = true;
+            cinemaPresets_.push_back(std::move(preset));
+        };
+        builtIn("Cozy", 6.0f, 0, 0.32f, 35.0f, 7);
+        builtIn("Movie Theater", 14.0f, 0, 0.32f, 90.0f, 8);
+        builtIn("Raid Night", 10.0f, 0, 0.32f, 70.0f, 2);
+        builtIn("Outdoor Screen", 22.0f, 0, 0.32f, 120.0f, 0);
+        builtIn("Picture in Picture", 8.0f, 1, 0.28f, 60.0f, 0);
+        builtIn("Desktop", 8.0f, 1, 0.45f, 60.0f, 1);
+        builtIn("Tavern TV", 5.0f, 0, 0.32f, 30.0f, 1);
+
+        const std::wstring directory = ExtensionDirectory();
+        if (directory.empty()) return;
+        std::ifstream input(std::filesystem::path(directory) / L"cinema-presets.tsv");
+        if (!input) return;
+        input.imbue(std::locale::classic());
+        std::string version;
+        if (!std::getline(input, version) || version != "azerothplex-cinema-v1") return;
+        CinemaPreset preset;
+        while (input >> std::quoted(preset.name) >> preset.width >> preset.bottomOffset >>
+               preset.rotationDegrees >> preset.pinned >> preset.pinnedLeft >> preset.pinnedTop >>
+               preset.pinnedWidth >> preset.depthTest >> preset.depthBias >> preset.spatialAudio >>
+               preset.silentDistance >> preset.aspectRatioMode >> preset.fitMode >> preset.frameStyle >>
+               preset.ambientLighting)
+        {
+            preset.builtIn = false;
+            preset.name = preset.name.substr(0, 63);
+            preset.width = std::clamp(preset.width, 2.0f, 30.0f);
+            preset.pinnedWidth = std::clamp(preset.pinnedWidth, 0.15f, 0.80f);
+            preset.aspectRatioMode = std::clamp(preset.aspectRatioMode, 0, 4);
+            preset.fitMode = std::clamp(preset.fitMode, 0, 3);
+            preset.frameStyle = std::clamp(preset.frameStyle, 0, 8);
+            cinemaPresets_.push_back(preset);
+        }
+    }
+
+    void VideoSurface::SaveCinemaPresets()
+    {
+        const std::wstring directory = ExtensionDirectory();
+        if (directory.empty()) return;
+        const auto target = std::filesystem::path(directory) / L"cinema-presets.tsv";
+        const auto temporary = target.wstring() + L".tmp";
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) return;
+        output.imbue(std::locale::classic());
+        output << "azerothplex-cinema-v1\n";
+        for (const auto& preset : cinemaPresets_)
+        {
+            if (preset.builtIn) continue;
+            output << std::quoted(preset.name) << ' ' << std::setprecision(9)
+                   << preset.width << ' ' << preset.bottomOffset << ' ' << preset.rotationDegrees << ' '
+                   << preset.pinned << ' ' << preset.pinnedLeft << ' ' << preset.pinnedTop << ' '
+                   << preset.pinnedWidth << ' ' << preset.depthTest << ' ' << preset.depthBias << ' '
+                   << preset.spatialAudio << ' ' << preset.silentDistance << ' '
+                   << preset.aspectRatioMode << ' ' << preset.fitMode << ' ' << preset.frameStyle << ' '
+                   << preset.ambientLighting << '\n';
+        }
+        output.close();
+        if (output)
+            MoveFileExW(temporary.c_str(), target.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    }
+
+    void VideoSurface::ApplyCinemaPreset(size_t index)
+    {
+        if (index >= cinemaPresets_.size()) return;
+        const auto preset = cinemaPresets_[index];
+        selectedCinemaPreset_ = static_cast<int>(index);
+        width_ = preset.width;
+        bottomOffset_ = preset.bottomOffset;
+        if (placed_)
+            Rotate(preset.rotationDegrees - screenRotationDegrees_);
+        screenRotationDegrees_ = preset.rotationDegrees;
+        pinned_ = preset.pinned;
+        pinnedLeft_ = preset.pinnedLeft;
+        pinnedTop_ = preset.pinnedTop;
+        pinnedWidth_ = preset.pinnedWidth;
+        wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
+        depthTest_ = preset.depthTest;
+        depthBias_ = preset.depthBias;
+        spatialAudio_ = preset.spatialAudio;
+        silentDistance_ = preset.silentDistance;
+        aspectRatioMode_ = preset.aspectRatioMode;
+        fitMode_ = preset.fitMode;
+        frameStyle_ = preset.frameStyle;
+        ambientLighting_ = preset.ambientLighting;
+        std::snprintf(cinemaPresetName_, sizeof(cinemaPresetName_), "%s", preset.name.c_str());
+        if (placed_) SavePlacement();
+        status_ = "Applied cinema preset: " + preset.name;
+    }
+
+    void VideoSurface::SaveCurrentCinemaPreset()
+    {
+        CinemaPreset preset;
+        preset.name = cinemaPresetName_[0] ? cinemaPresetName_ : "Custom Cinema";
+        preset.width = width_;
+        preset.bottomOffset = bottomOffset_;
+        preset.rotationDegrees = screenRotationDegrees_;
+        preset.pinned = pinned_;
+        preset.pinnedLeft = pinnedLeft_;
+        preset.pinnedTop = pinnedTop_;
+        preset.pinnedWidth = pinnedWidth_;
+        preset.depthTest = depthTest_;
+        preset.depthBias = depthBias_;
+        preset.spatialAudio = spatialAudio_;
+        preset.silentDistance = silentDistance_;
+        preset.aspectRatioMode = aspectRatioMode_;
+        preset.fitMode = fitMode_;
+        preset.frameStyle = frameStyle_;
+        preset.ambientLighting = ambientLighting_;
+        preset.builtIn = false;
+        cinemaPresets_.push_back(std::move(preset));
+        selectedCinemaPreset_ = static_cast<int>(cinemaPresets_.size() - 1);
+        SaveCinemaPresets();
+        status_ = "Saved the current cinema preset.";
+    }
+
+    void VideoSurface::ShareCurrentCinema()
+    {
+        char payload[wxl_video_shared::kUiTextBytes]{};
+        std::snprintf(payload, sizeof(payload),
+                      "%s|%.3f|%.3f|%.3f|%d|%.4f|%.4f|%.4f|%d|%.5f|%d|%.3f|%d|%d|%d|%d",
+                      cinemaPresetName_[0] ? cinemaPresetName_ : "Shared Cinema",
+                      width_, bottomOffset_, screenRotationDegrees_, pinned_, pinnedLeft_, pinnedTop_,
+                      pinnedWidth_, depthTest_, depthBias_, spatialAudio_, silentDistance_,
+                      aspectRatioMode_, fitMode_, frameStyle_, ambientLighting_);
+        SendUiCommand(wxl_video_shared::UiCommand::ShareCinemaSettings, -1, 0, payload);
+    }
+
+    void VideoSurface::ApplySharedCinema()
+    {
+        if (!uiState_.partyRoomCode[0] || !uiState_.sharedCinema.presetName[0])
+        {
+            lastSharedCinemaSignature_.clear();
+            return;
+        }
+        char signature[384]{};
+        std::snprintf(signature, sizeof(signature),
+                      "%s|%.3f|%.3f|%.3f|%ld|%.4f|%.4f|%.4f|%ld|%.5f|%ld|%.3f|%ld|%ld|%ld|%ld",
+                      uiState_.sharedCinema.presetName, uiState_.sharedCinema.width,
+                      uiState_.sharedCinema.heightOffset, uiState_.sharedCinema.rotationDegrees,
+                      static_cast<long>(uiState_.sharedCinema.pinned), uiState_.sharedCinema.pinnedX,
+                      uiState_.sharedCinema.pinnedY, uiState_.sharedCinema.pinnedWidth,
+                      static_cast<long>(uiState_.sharedCinema.depthOcclusion),
+                      uiState_.sharedCinema.depthOffset,
+                      static_cast<long>(uiState_.sharedCinema.distanceAudio), uiState_.sharedCinema.audioRange,
+                      static_cast<long>(uiState_.sharedCinema.aspectRatioMode),
+                      static_cast<long>(uiState_.sharedCinema.fitMode),
+                      static_cast<long>(uiState_.sharedCinema.frameStyle),
+                      static_cast<long>(uiState_.sharedCinema.ambientLighting));
+        if (signature == lastSharedCinemaSignature_) return;
+        lastSharedCinemaSignature_ = signature;
+
+        width_ = std::clamp(uiState_.sharedCinema.width, 2.0f, 30.0f);
+        bottomOffset_ = uiState_.sharedCinema.heightOffset;
+        if (placed_)
+            Rotate(uiState_.sharedCinema.rotationDegrees - screenRotationDegrees_);
+        screenRotationDegrees_ = uiState_.sharedCinema.rotationDegrees;
+        pinned_ = uiState_.sharedCinema.pinned ? 1 : 0;
+        pinnedLeft_ = uiState_.sharedCinema.pinnedX;
+        pinnedTop_ = uiState_.sharedCinema.pinnedY;
+        pinnedWidth_ = uiState_.sharedCinema.pinnedWidth;
+        wxl_video_shared::ClampPinnedLayout(pinnedLeft_, pinnedTop_, pinnedWidth_);
+        depthTest_ = uiState_.sharedCinema.depthOcclusion ? 1 : 0;
+        depthBias_ = uiState_.sharedCinema.depthOffset;
+        spatialAudio_ = uiState_.sharedCinema.distanceAudio ? 1 : 0;
+        silentDistance_ = uiState_.sharedCinema.audioRange;
+        aspectRatioMode_ = std::clamp(static_cast<int>(uiState_.sharedCinema.aspectRatioMode), 0, 4);
+        fitMode_ = std::clamp(static_cast<int>(uiState_.sharedCinema.fitMode), 0, 3);
+        frameStyle_ = std::clamp(static_cast<int>(uiState_.sharedCinema.frameStyle), 0, 8);
+        ambientLighting_ = uiState_.sharedCinema.ambientLighting ? 1 : 0;
+        std::snprintf(cinemaPresetName_, sizeof(cinemaPresetName_), "%s", uiState_.sharedCinema.presetName);
+        if (placed_) SavePlacement();
+        status_ = "Applied the host's shared cinema layout.";
+    }
+
+    float VideoSurface::ScreenAspectRatio() const
+    {
+        switch (aspectRatioMode_)
+        {
+        case 1: return 16.0f / 9.0f;
+        case 2: return 16.0f / 10.0f;
+        case 3: return 4.0f / 3.0f;
+        case 4: return 21.0f / 9.0f;
+        default:
+            return std::isfinite(uiState_.videoAspectRatio) && uiState_.videoAspectRatio > 0.2f
+                ? std::clamp(uiState_.videoAspectRatio, 0.5f, 4.0f) : 16.0f / 9.0f;
+        }
+    }
+
+    void VideoSurface::VideoLayout(float targetHalfWidth, float targetHalfHeight,
+                                    float& videoHalfWidth, float& videoHalfHeight,
+                                    float& u0, float& v0, float& u1, float& v1) const
+    {
+        videoHalfWidth = targetHalfWidth;
+        videoHalfHeight = targetHalfHeight;
+        u0 = 0.0f; v0 = 0.0f; u1 = 1.0f; v1 = 1.0f;
+        const float targetAspect = targetHalfWidth / std::max(0.001f, targetHalfHeight);
+        const float sourceAspect = std::isfinite(uiState_.videoAspectRatio) && uiState_.videoAspectRatio > 0.2f
+            ? std::clamp(uiState_.videoAspectRatio, 0.5f, 4.0f) : 16.0f / 9.0f;
+        if (fitMode_ == 2) return; // Stretch.
+        if (fitMode_ == 0) // Fit.
+        {
+            if (sourceAspect > targetAspect)
+                videoHalfHeight = targetHalfWidth / sourceAspect;
+            else
+                videoHalfWidth = targetHalfHeight * sourceAspect;
+            return;
+        }
+        // Fill and Crop both fill the selected frame without distortion by trimming UVs.
+        if (sourceAspect > targetAspect)
+        {
+            const float visible = targetAspect / sourceAspect;
+            u0 = (1.0f - visible) * 0.5f;
+            u1 = 1.0f - u0;
+        }
+        else if (sourceAspect < targetAspect)
+        {
+            const float visible = sourceAspect / targetAspect;
+            v0 = (1.0f - visible) * 0.5f;
+            v1 = 1.0f - v0;
+        }
     }
 
     bool VideoSurface::ValidateFrames() const
@@ -667,6 +1003,27 @@ namespace wxl_video_screen
         MemoryBarrier();
         if (header->slotSequence[active] != before) return texture_ != nullptr;
 
+        if (ambientLighting_ && GetTickCount() - lastAmbientSampleAt_ >= 500)
+        {
+            uint64_t red = 0, green = 0, blue = 0, samples = 0;
+            constexpr size_t sampleStep = 4 * 1024;
+            for (size_t offset = 0; offset + 3 < frameScratch_.size(); offset += sampleStep)
+            {
+                blue += frameScratch_[offset + 0];
+                green += frameScratch_[offset + 1];
+                red += frameScratch_[offset + 2];
+                ++samples;
+            }
+            if (samples)
+            {
+                const uint32_t r = static_cast<uint32_t>(std::min<uint64_t>(255, red / samples));
+                const uint32_t g = static_cast<uint32_t>(std::min<uint64_t>(255, green / samples));
+                const uint32_t b = static_cast<uint32_t>(std::min<uint64_t>(255, blue / samples));
+                ambientColor_ = 0xFF000000u | (r << 16) | (g << 8) | b;
+            }
+            lastAmbientSampleAt_ = GetTickCount();
+        }
+
         if (textureDevice_ != device)
             ReleaseTexture();
         if (!texture_)
@@ -709,7 +1066,11 @@ namespace wxl_video_screen
         UploadLatestFrame(device);
 
         const float halfWidth = width_ * 0.5f;
-        const float halfHeight = width_ * 9.0f / 32.0f;
+        const float halfHeight = halfWidth / ScreenAspectRatio();
+        float videoHalfWidth = halfWidth;
+        float videoHalfHeight = halfHeight;
+        float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+        VideoLayout(halfWidth, halfHeight, videoHalfWidth, videoHalfHeight, u0, v0, u1, v1);
         // A missing helper/video must still produce an unmistakable world-space test card.  The
         // previous nearly-black placeholder was effectively invisible in dark zones and, because it
         // also honored world depth, gave no way to distinguish placement from playback failures.
@@ -718,21 +1079,28 @@ namespace wxl_video_screen
         const D3DCOLOR bottomLeft = texture_ ? 0xFFFFFFFFu : 0xFF00E5FFu;
         const D3DCOLOR bottomRight = texture_ ? 0xFFFFFFFFu : 0xFF7C4DFFu;
         const Vertex vertices[4] = {
-            { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
-              center_[2] + halfHeight, topLeft, 1.0f, 0.0f },
-            { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
-              center_[2] + halfHeight, topRight, 0.0f, 0.0f },
-            { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
-              center_[2] - halfHeight, bottomLeft, 1.0f, 1.0f },
-            { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
-              center_[2] - halfHeight, bottomRight, 0.0f, 1.0f },
+            { center_[0] - right_[0] * videoHalfWidth, center_[1] - right_[1] * videoHalfWidth,
+              center_[2] + videoHalfHeight, topLeft, u1, v0 },
+            { center_[0] + right_[0] * videoHalfWidth, center_[1] + right_[1] * videoHalfWidth,
+              center_[2] + videoHalfHeight, topRight, u0, v0 },
+            { center_[0] - right_[0] * videoHalfWidth, center_[1] - right_[1] * videoHalfWidth,
+              center_[2] - videoHalfHeight, bottomLeft, u1, v1 },
+            { center_[0] + right_[0] * videoHalfWidth, center_[1] + right_[1] * videoHalfWidth,
+              center_[2] - videoHalfHeight, bottomRight, u0, v1 },
         };
+        const D3DCOLOR surroundColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
+            : (frameStyle_ > 0 ? FrameColor(frameStyle_) : 0xFFFFFF00u);
         const Vertex border[5] = {
-            { vertices[0].x, vertices[0].y, vertices[0].z, 0xFFFFFF00u, 0.0f, 0.0f },
-            { vertices[1].x, vertices[1].y, vertices[1].z, 0xFFFFFF00u, 0.0f, 0.0f },
-            { vertices[3].x, vertices[3].y, vertices[3].z, 0xFFFFFF00u, 0.0f, 0.0f },
-            { vertices[2].x, vertices[2].y, vertices[2].z, 0xFFFFFF00u, 0.0f, 0.0f },
-            { vertices[0].x, vertices[0].y, vertices[0].z, 0xFFFFFF00u, 0.0f, 0.0f },
+            { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
+              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
+            { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
+              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
+            { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
+              center_[2] - halfHeight, surroundColor, 0.0f, 0.0f },
+            { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
+              center_[2] - halfHeight, surroundColor, 0.0f, 0.0f },
+            { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
+              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
         };
 
         IDirect3DStateBlock9* state = nullptr;
@@ -857,7 +1225,7 @@ namespace wxl_video_screen
             D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(Vertex));
 
         HRESULT borderResult = S_OK;
-        if (outline_)
+        if (outline_ || frameStyle_ > 0 || ambientLighting_)
         {
             device->SetTexture(0, nullptr);
             device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -905,7 +1273,9 @@ namespace wxl_video_screen
         float widthFraction = pinnedWidth_;
         wxl_video_shared::ClampPinnedLayout(leftFraction, topFraction, widthFraction);
         const float width = viewportWidth * widthFraction;
-        const float height = width * 9.0f / 16.0f;
+        const float height = width / ScreenAspectRatio();
+        topFraction = std::clamp(topFraction, 0.0f,
+                                 std::max(0.0f, 1.0f - height / viewportHeight));
         left = static_cast<float>(viewport.X) + leftFraction * viewportWidth - 0.5f;
         top = static_cast<float>(viewport.Y) + topFraction * viewportHeight - 0.5f;
         right = left + width;
@@ -934,18 +1304,33 @@ namespace wxl_video_screen
         const D3DCOLOR topRight = texture_ ? 0xFFFFFFFFu : 0xFFFFD60Au;
         const D3DCOLOR bottomLeft = texture_ ? 0xFFFFFFFFu : 0xFF00E5FFu;
         const D3DCOLOR bottomRight = texture_ ? 0xFFFFFFFFu : 0xFF7C4DFFu;
+        const float targetHalfWidth = (right - left) * 0.5f;
+        const float targetHalfHeight = (bottom - top) * 0.5f;
+        float videoHalfWidth = targetHalfWidth;
+        float videoHalfHeight = targetHalfHeight;
+        float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+        VideoLayout(targetHalfWidth, targetHalfHeight, videoHalfWidth, videoHalfHeight,
+                    u0, v0, u1, v1);
+        const float centerX = (left + right) * 0.5f;
+        const float centerY = (top + bottom) * 0.5f;
+        const float videoLeft = centerX - videoHalfWidth;
+        const float videoRight = centerX + videoHalfWidth;
+        const float videoTop = centerY - videoHalfHeight;
+        const float videoBottom = centerY + videoHalfHeight;
         const ScreenVertex vertices[4] = {
-            {left, top, 0.0f, 1.0f, topLeft, 0.0f, 0.0f},
-            {right, top, 0.0f, 1.0f, topRight, 1.0f, 0.0f},
-            {left, bottom, 0.0f, 1.0f, bottomLeft, 0.0f, 1.0f},
-            {right, bottom, 0.0f, 1.0f, bottomRight, 1.0f, 1.0f},
+            {videoLeft, videoTop, 0.0f, 1.0f, topLeft, u0, v0},
+            {videoRight, videoTop, 0.0f, 1.0f, topRight, u1, v0},
+            {videoLeft, videoBottom, 0.0f, 1.0f, bottomLeft, u0, v1},
+            {videoRight, videoBottom, 0.0f, 1.0f, bottomRight, u1, v1},
         };
+        const D3DCOLOR surroundColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
+            : (frameStyle_ > 0 ? FrameColor(frameStyle_) : 0xFFFFFF00u);
         const ScreenVertex border[5] = {
-            {vertices[0].x, vertices[0].y, vertices[0].z, vertices[0].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
-            {vertices[1].x, vertices[1].y, vertices[1].z, vertices[1].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
-            {vertices[3].x, vertices[3].y, vertices[3].z, vertices[3].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
-            {vertices[2].x, vertices[2].y, vertices[2].z, vertices[2].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
-            {vertices[0].x, vertices[0].y, vertices[0].z, vertices[0].rhw, 0xFFFFFF00u, 0.0f, 0.0f},
+            {left, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
+            {right, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
+            {right, bottom, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
+            {left, bottom, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
+            {left, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
         };
 
         IDirect3DStateBlock9* state = nullptr;
@@ -995,7 +1380,7 @@ namespace wxl_video_screen
         const HRESULT drawResult = device->DrawPrimitiveUP(
             D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(ScreenVertex));
         HRESULT borderResult = S_OK;
-        if (outline_)
+        if (outline_ || frameStyle_ > 0 || ambientLighting_)
         {
             device->SetTexture(0, nullptr);
             device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -1122,8 +1507,36 @@ namespace wxl_video_screen
             SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
                           static_cast<LONG>(wxl_video_shared::UiView::Search));
         api_->UiSameLine();
+        if (api_->UiButton("Watch Together"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Party));
+        api_->UiSameLine();
+        if (api_->UiButton("Settings"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Settings));
+        api_->UiSameLine();
         if (api_->UiButton("Sign out of Plex"))
             SendUiCommand(wxl_video_shared::UiCommand::SignOut);
+
+        api_->UiText("Plex home:");
+        if (api_->UiButton("Continue Watching"))
+            SendUiCommand(wxl_video_shared::UiCommand::OpenHomeSection, -1,
+                          static_cast<LONG>(0));
+        api_->UiSameLine();
+        if (api_->UiButton("On Deck"))
+            SendUiCommand(wxl_video_shared::UiCommand::OpenHomeSection, -1,
+                          static_cast<LONG>(3));
+        if (api_->UiButton("Recently Added Movies"))
+            SendUiCommand(wxl_video_shared::UiCommand::OpenHomeSection, -1,
+                          static_cast<LONG>(1));
+        api_->UiSameLine();
+        if (api_->UiButton("Recently Added TV"))
+            SendUiCommand(wxl_video_shared::UiCommand::OpenHomeSection, -1,
+                          static_cast<LONG>(2));
+        api_->UiSameLine();
+        if (api_->UiButton("Recently Watched"))
+            SendUiCommand(wxl_video_shared::UiCommand::OpenHomeSection, -1,
+                          static_cast<LONG>(4));
 
         if (!uiState_.watchlistLoaded)
             api_->UiText("Loading Plex watchlist...");
@@ -1238,6 +1651,12 @@ namespace wxl_video_screen
         }
         if (api_->UiButton("Play selected Plex item"))
             SendUiCommand(wxl_video_shared::UiCommand::Play);
+        if (uiState_.partyRoomCode[0])
+        {
+            api_->UiSameLine();
+            if (api_->UiButton("Add selected item to party queue"))
+                SendUiCommand(wxl_video_shared::UiCommand::AddCurrentToQueue);
+        }
 
         const uint32_t count = static_cast<uint32_t>(std::min(
             static_cast<size_t>(uiState_.streamCount), wxl_video_shared::kUiMaxStreams));
@@ -1311,10 +1730,294 @@ namespace wxl_video_screen
         api_->UiSameLine();
         if (api_->UiButton("Stop Plex playback"))
             SendUiCommand(wxl_video_shared::UiCommand::Stop);
-        api_->UiSameLine();
+
+        int speed = static_cast<int>(uiState_.playbackSpeedPermille);
+        if (api_->UiSliderInt("Playback speed (x1000)", &speed, 500, 2000))
+            SendUiCommand(wxl_video_shared::UiCommand::SetPlaybackSpeed, -1, speed);
+
+        const uint32_t markerCount = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.markerCount), wxl_video_shared::kUiMaxMarkers));
+        for (uint32_t index = 0; index < markerCount; ++index)
+        {
+            const auto& marker = uiState_.markers[index];
+            if (uiState_.playbackPositionMs >= static_cast<uint32_t>(std::max<LONG>(0, marker.startMs)) &&
+                uiState_.playbackPositionMs < static_cast<uint32_t>(std::max<LONG>(0, marker.endMs)))
+            {
+                char label[96]{};
+                std::snprintf(label, sizeof(label), "Skip %s",
+                              marker.type[0] ? marker.type : "marker");
+                if (api_->UiButton(label))
+                    SendUiCommand(wxl_video_shared::UiCommand::SkipMarker,
+                                  static_cast<LONG>(index));
+            }
+        }
+
+        if (uiState_.nextEpisodeAvailable)
+        {
+            char next[192]{};
+            std::snprintf(next, sizeof(next), "Next: %s (%u seconds)",
+                          uiState_.nextEpisode.title[0] ? uiState_.nextEpisode.title : "episode",
+                          (uiState_.autoplayRemainingMs + 999) / 1000);
+            api_->UiText(next);
+            if (api_->UiButton("Play next episode now"))
+                SendUiCommand(wxl_video_shared::UiCommand::PlayNextEpisode);
+            api_->UiSameLine();
+            if (api_->UiButton("Cancel autoplay"))
+                SendUiCommand(wxl_video_shared::UiCommand::CancelAutoplay);
+        }
+
+        if (uiState_.partyRoomCode[0])
+        {
+            if (api_->UiButton("Watch Together"))
+                SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                              static_cast<LONG>(wxl_video_shared::UiView::Party));
+            api_->UiSameLine();
+            if (api_->UiButton("Party queue"))
+                SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                              static_cast<LONG>(wxl_video_shared::UiView::Queue));
+        }
         if (api_->UiButton("Back to Plex item"))
             SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
                           static_cast<LONG>(wxl_video_shared::UiView::Details));
+    }
+
+    void VideoSurface::DrawPlexParty()
+    {
+        if (api_->UiButton("Back to Plex"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Home));
+        api_->UiSameLine();
+        if (api_->UiButton("Party settings"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Settings));
+
+        if (!uiState_.partyRoomCode[0])
+        {
+            api_->UiText("Create a room or join another AzerothPlex viewer.");
+            if (api_->UiButton("Create private watch party"))
+                SendUiCommand(wxl_video_shared::UiCommand::CreateParty);
+            api_->UiSameLine();
+            if (api_->UiButton("Create public watch party"))
+                SendUiCommand(wxl_video_shared::UiCommand::CreatePublicParty);
+            api_->UiInputText("Watch-party code", partyCode_, sizeof(partyCode_));
+            if (api_->UiButton("Join watch party"))
+                SendUiCommand(wxl_video_shared::UiCommand::JoinParty, -1, 0, partyCode_);
+            if (api_->UiButton("Refresh public rooms"))
+                SendUiCommand(wxl_video_shared::UiCommand::RefreshPublicRooms);
+
+            const uint32_t roomCount = static_cast<uint32_t>(std::min(
+                static_cast<size_t>(uiState_.publicRoomCount), wxl_video_shared::kUiMaxPublicRooms));
+            for (uint32_t index = 0; index < roomCount; ++index)
+            {
+                const auto& room = uiState_.publicRooms[index];
+                char label[256]{};
+                std::snprintf(label, sizeof(label), "Join %s - %s (%ld viewer%s)",
+                              room.code, room.title[0] ? room.title : "Watch Party",
+                              static_cast<long>(room.memberCount), room.memberCount == 1 ? "" : "s");
+                if (api_->UiButton(label))
+                    SendUiCommand(wxl_video_shared::UiCommand::JoinPublicRoom,
+                                  static_cast<LONG>(index));
+            }
+            return;
+        }
+
+        char roomLine[192]{};
+        std::snprintf(roomLine, sizeof(roomLine), "Room %s | Host: %s",
+                      uiState_.partyRoomCode,
+                      uiState_.partyHostName[0] ? uiState_.partyHostName : "unknown");
+        api_->UiText(roomLine);
+        char diagnostics[256]{};
+        std::snprintf(diagnostics, sizeof(diagnostics),
+                      "RTT %lld ms | drift %lld ms | correction %s | epoch %llu / seq %llu | reconnects %u",
+                      static_cast<long long>(uiState_.partyRelayRttMs),
+                      static_cast<long long>(uiState_.partyDriftMs),
+                      uiState_.partyCorrection[0] ? uiState_.partyCorrection : "None",
+                      static_cast<unsigned long long>(uiState_.partyRoomEpoch),
+                      static_cast<unsigned long long>(uiState_.partySequence),
+                      uiState_.partyReconnectCount);
+        api_->UiText(diagnostics);
+        if (uiState_.partyMediaMatch[0]) api_->UiText(uiState_.partyMediaMatch);
+        if (uiState_.partyError[0]) api_->UiText(uiState_.partyError);
+
+        if (api_->UiButton("Copy party invite"))
+        {
+            std::string invite = "Join my AzerothPlex Watch Party: ";
+            invite += uiState_.partyRoomCode;
+            status_ = CopyClipboardText(invite)
+                ? "Watch-party invite copied. Paste it into party, raid, guild, or whisper chat."
+                : "Could not copy the watch-party invite.";
+        }
+        api_->UiSameLine();
+        if (api_->UiButton("Party queue"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Queue));
+        api_->UiSameLine();
+        if (api_->UiButton("Leave party"))
+            SendUiCommand(wxl_video_shared::UiCommand::LeaveParty);
+
+        api_->UiSeparator();
+        api_->UiText("Members:");
+        const uint32_t memberCount = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.partyMemberCount), wxl_video_shared::kUiMaxPartyMembers));
+        for (uint32_t index = 0; index < memberCount; ++index)
+        {
+            const auto& member = uiState_.partyMembers[index];
+            char memberLine[192]{};
+            std::snprintf(memberLine, sizeof(memberLine), "%s%s%s%s",
+                          member.name[0] ? member.name : "Player",
+                          member.role == 1 ? " [Host]" : "",
+                          member.ready ? " [Ready]" : "",
+                          member.connected ? "" : " [Disconnected]");
+            api_->UiText(memberLine);
+        }
+
+        if (uiState_.partyRole == 1)
+        {
+            if (api_->UiButton("Start ready check"))
+                SendUiCommand(wxl_video_shared::UiCommand::StartReadyCheck);
+        }
+        if (uiState_.partyReadyCheckActive)
+        {
+            if (uiState_.partyReadyStartAtMs > 0)
+            {
+                const int64_t relayNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() +
+                    uiState_.partyClockOffsetMs;
+                const int64_t remainingMs = std::max<int64_t>(0, uiState_.partyReadyStartAtMs - relayNowMs);
+                char countdown[96]{};
+                std::snprintf(countdown, sizeof(countdown), "Everyone ready. Starting in %lld...",
+                              static_cast<long long>((remainingMs + 999) / 1000));
+                api_->UiText(countdown);
+            }
+            else
+            {
+                api_->UiText("Ready check: waiting for everyone.");
+            }
+            if (api_->UiButton("I'm ready"))
+                SendUiCommand(wxl_video_shared::UiCommand::SetReadyState, -1, 1);
+        }
+
+        if (uiState_.partyRole == 1 && uiState_.controlRequest[0])
+        {
+            char request[192]{};
+            std::snprintf(request, sizeof(request), "Playback control request: %s",
+                          uiState_.controlRequest);
+            api_->UiText(request);
+            if (api_->UiButton("Allow request"))
+                SendUiCommand(wxl_video_shared::UiCommand::RespondControlRequest, -1, 1);
+            api_->UiSameLine();
+            if (api_->UiButton("Ignore request"))
+                SendUiCommand(wxl_video_shared::UiCommand::RespondControlRequest, -1, 0);
+        }
+    }
+
+    void VideoSurface::DrawPlexQueue()
+    {
+        if (api_->UiButton("Back to watch party"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Party));
+        api_->UiSameLine();
+        if (uiState_.item.ratingKey[0] && api_->UiButton("Add selected Plex item"))
+            SendUiCommand(wxl_video_shared::UiCommand::AddCurrentToQueue);
+
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            static_cast<size_t>(uiState_.partyQueueCount), wxl_video_shared::kUiMaxPartyQueue));
+        if (!count) api_->UiText("The watch-party queue is empty.");
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            const auto& item = uiState_.partyQueue[index];
+            char line[192]{};
+            std::snprintf(line, sizeof(line), "%u. %s (%s)%s", index + 1,
+                          item.title[0] ? item.title : "Plex item",
+                          item.type[0] ? item.type : "media",
+                          item.resolved ? "" : " [needs local match]");
+            api_->UiText(line);
+            if (api_->UiButton((std::string("Play##q") + std::to_string(index)).c_str()))
+                SendUiCommand(wxl_video_shared::UiCommand::PlayQueueItem,
+                              static_cast<LONG>(index));
+            api_->UiSameLine();
+            if (index > 0 && api_->UiButton((std::string("Up##q") + std::to_string(index)).c_str()))
+                SendUiCommand(wxl_video_shared::UiCommand::MoveQueueItem,
+                              static_cast<LONG>(index), static_cast<LONG>(index - 1));
+            if (index + 1 < count)
+            {
+                api_->UiSameLine();
+                if (api_->UiButton((std::string("Down##q") + std::to_string(index)).c_str()))
+                    SendUiCommand(wxl_video_shared::UiCommand::MoveQueueItem,
+                                  static_cast<LONG>(index), static_cast<LONG>(index + 1));
+            }
+            api_->UiSameLine();
+            if (api_->UiButton((std::string("Remove##q") + std::to_string(index)).c_str()))
+                SendUiCommand(wxl_video_shared::UiCommand::RemoveQueueItem,
+                              static_cast<LONG>(index));
+        }
+    }
+
+    void VideoSurface::DrawPlexSettings()
+    {
+        if (api_->UiButton("Back"))
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(uiState_.partyRoomCode[0]
+                              ? wxl_video_shared::UiView::Party : wxl_video_shared::UiView::Home));
+        api_->UiText("Watch Together defaults");
+        int mode = static_cast<int>(uiState_.partyPermissionMode);
+        if (api_->UiSliderInt("Control mode (0 host, 1 shared, 2 request)", &mode, 0, 2))
+            SendUiCommand(wxl_video_shared::UiCommand::SetPartyPermissionMode, -1, mode);
+        int syncAudio = uiState_.partySyncAudio ? 1 : 0;
+        if (api_->UiCheckbox("Synchronize audio selection", &syncAudio))
+            SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncAudio, -1, syncAudio);
+        int syncSubtitles = uiState_.partySyncSubtitles ? 1 : 0;
+        if (api_->UiCheckbox("Synchronize subtitle selection", &syncSubtitles))
+            SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncSubtitles, -1, syncSubtitles);
+        static int disconnectPolicy = 0;
+        if (api_->UiSliderInt("Disconnect policy (0 keep, 1 pause 60s, 2 pause until return, 3 ask)",
+                              &disconnectPolicy, 0, 3))
+            SendUiCommand(wxl_video_shared::UiCommand::SetDisconnectPolicy, -1, disconnectPolicy);
+    }
+
+    void VideoSurface::DrawMiniPlayer()
+    {
+        if (!RefreshUiState() || !uiState_.playingItem.title[0]) return;
+        api_->UiText(uiState_.playingItem.title);
+        if (uiState_.playbackDurationMs)
+        {
+            char current[32]{}, total[32]{}, line[80]{};
+            FormatTime(current, sizeof(current), uiState_.playbackPositionMs);
+            FormatTime(total, sizeof(total), uiState_.playbackDurationMs);
+            std::snprintf(line, sizeof(line), "%s / %s", current, total);
+            api_->UiText(line);
+        }
+        if (api_->UiButton("-10s##mini") && uiState_.playbackDurationMs)
+        {
+            const LONG target = static_cast<LONG>(uiState_.playbackPositionMs > 10000
+                ? uiState_.playbackPositionMs - 10000 : 0);
+            SendUiCommand(wxl_video_shared::UiCommand::Seek, -1, target);
+        }
+        api_->UiSameLine();
+        if (uiState_.playbackPaused)
+        {
+            if (api_->UiButton("Play##mini")) SendUiCommand(wxl_video_shared::UiCommand::Play);
+        }
+        else
+        {
+            if (api_->UiButton("Pause##mini")) SendUiCommand(wxl_video_shared::UiCommand::Pause);
+        }
+        api_->UiSameLine();
+        if (api_->UiButton("+10s##mini") && uiState_.playbackDurationMs)
+        {
+            const uint64_t desired = static_cast<uint64_t>(uiState_.playbackPositionMs) + 10000u;
+            const LONG target = static_cast<LONG>(std::min<uint64_t>(desired, uiState_.playbackDurationMs));
+            SendUiCommand(wxl_video_shared::UiCommand::Seek, -1, target);
+        }
+        api_->UiSameLine();
+        if (api_->UiButton("Stop##mini")) SendUiCommand(wxl_video_shared::UiCommand::Stop);
+        api_->UiSameLine();
+        if (api_->UiButton("Open full player"))
+        {
+            plexPanelOpen_ = true;
+            SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
+                          static_cast<LONG>(wxl_video_shared::UiView::Player));
+        }
     }
 
     void VideoSurface::DrawPlexPanel()
@@ -1342,6 +2045,9 @@ namespace wxl_video_screen
         case wxl_video_shared::UiView::Search: DrawPlexSearch(); break;
         case wxl_video_shared::UiView::Details: DrawPlexDetails(); break;
         case wxl_video_shared::UiView::Player: DrawPlexPlayer(); break;
+        case wxl_video_shared::UiView::Party: DrawPlexParty(); break;
+        case wxl_video_shared::UiView::Queue: DrawPlexQueue(); break;
+        case wxl_video_shared::UiView::Settings: DrawPlexSettings(); break;
         default: api_->UiText("Plex player returned an invalid view."); break;
         }
         if (uiState_.view == wxl_video_shared::UiView::Player &&
@@ -1354,6 +2060,8 @@ namespace wxl_video_screen
     {
         if (!api_) return;
         api_->UiText("Native Plex player with a physical world-space screen.");
+        if (api_->UiCheckbox("Show mini player when Plex UI is hidden", &miniPlayerEnabled_))
+            SaveUiPreferences();
         if (plexPanelOpen_)
         {
             if (api_->UiButton("Hide Plex player UI"))
@@ -1371,12 +2079,16 @@ namespace wxl_video_screen
 
         if (!plexPanelOpen_)
         {
-            if (api_->UiButton("Play"))
-                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Play));
-            if (api_->UiButton("Pause"))
-                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Pause));
-            if (api_->UiButton("Stop"))
-                SendCommand(static_cast<LONG>(wxl_video_shared::Command::Stop));
+            if (miniPlayerEnabled_) DrawMiniPlayer();
+            if (!uiState_.playingItem.title[0])
+            {
+                if (api_->UiButton("Play"))
+                    SendCommand(static_cast<LONG>(wxl_video_shared::Command::Play));
+                if (api_->UiButton("Pause"))
+                    SendCommand(static_cast<LONG>(wxl_video_shared::Command::Pause));
+                if (api_->UiButton("Stop"))
+                    SendCommand(static_cast<LONG>(wxl_video_shared::Command::Stop));
+            }
         }
         api_->UiSeparator();
 
@@ -1394,6 +2106,60 @@ namespace wxl_video_screen
         std::snprintf(volumeStatus, sizeof(volumeStatus), "Current screen audio: %d%%", effectiveVolume_);
         api_->UiText(volumeStatus);
         if (api_->UiButton("Close background Plex player")) CloseHost();
+        api_->UiSeparator();
+
+        api_->UiText("Cinema presets:");
+        for (size_t index = 0; index < cinemaPresets_.size(); ++index)
+        {
+            char label[128]{};
+            std::snprintf(label, sizeof(label), "%s%s##preset%zu",
+                          index == static_cast<size_t>(std::max(0, selectedCinemaPreset_)) ? "* " : "",
+                          cinemaPresets_[index].name.c_str(), index);
+            if (api_->UiButton(label)) ApplyCinemaPreset(index);
+            if ((index + 1) % 3 != 0 && index + 1 < cinemaPresets_.size()) api_->UiSameLine();
+        }
+        api_->UiInputText("Preset name", cinemaPresetName_, sizeof(cinemaPresetName_));
+        if (api_->UiButton("Save current layout as preset")) SaveCurrentCinemaPreset();
+        if (selectedCinemaPreset_ >= 0 &&
+            static_cast<size_t>(selectedCinemaPreset_) < cinemaPresets_.size() &&
+            !cinemaPresets_[static_cast<size_t>(selectedCinemaPreset_)].builtIn)
+        {
+            api_->UiSameLine();
+            if (api_->UiButton("Rename selected preset"))
+            {
+                cinemaPresets_[static_cast<size_t>(selectedCinemaPreset_)].name =
+                    cinemaPresetName_[0] ? cinemaPresetName_ : "Custom Cinema";
+                SaveCinemaPresets();
+            }
+            api_->UiSameLine();
+            if (api_->UiButton("Delete selected preset"))
+            {
+                cinemaPresets_.erase(cinemaPresets_.begin() + selectedCinemaPreset_);
+                selectedCinemaPreset_ = 0;
+                SaveCinemaPresets();
+            }
+        }
+        if (uiState_.partyRoomCode[0] && uiState_.partyRole == 1)
+        {
+            if (api_->UiButton("Share current cinema layout with party")) ShareCurrentCinema();
+        }
+
+        bool cinemaVisualChanged = api_->UiSliderInt(
+            "Aspect ratio (0 original, 1 16:9, 2 16:10, 3 4:3, 4 21:9)",
+            &aspectRatioMode_, 0, 4) != 0;
+        cinemaVisualChanged = api_->UiSliderInt(
+            "Video fit (0 fit, 1 fill, 2 stretch, 3 crop)", &fitMode_, 0, 3) != 0 || cinemaVisualChanged;
+        cinemaVisualChanged = api_->UiSliderInt(
+            "Screen frame (0 none, 1 TV, 2 Goblin, 3 Gnome, 4 Orc, 5 Blood Elf, 6 Titan, 7 Tavern, 8 Outdoor)",
+            &frameStyle_, 0, 8) != 0 || cinemaVisualChanged;
+        cinemaVisualChanged = api_->UiCheckbox("Ambient screen glow", &ambientLighting_) != 0 || cinemaVisualChanged;
+        if (cinemaVisualChanged && placed_) SavePlacement();
+        if (api_->UiCheckbox("Cinema mode (compact viewing controls)", &cinemaMode_))
+        {
+            if (cinemaMode_) outline_ = 0;
+        }
+        if (cinemaMode_)
+            api_->UiText("WarcraftXL does not expose safe action-bar/minimap hiding here; cinema mode keeps AzerothPlex controls compact without mutating WoW UI state.");
         api_->UiSeparator();
 
         if (api_->UiCheckbox("Pin Plex screen to display", &pinned_))
@@ -1439,33 +2205,36 @@ namespace wxl_video_screen
             char placement[192]{};
             std::snprintf(placement, sizeof(placement),
                           "Saved screen: map %d at %.2f, %.2f, %.2f (%.2f x %.2f yards)",
-                          mapId_, center_[0], center_[1], center_[2], width_, width_ * 9.0f / 16.0f);
+                          mapId_, center_[0], center_[1], center_[2], width_, width_ / ScreenAspectRatio());
             api_->UiText(placement);
         }
         else
         {
             api_->UiText("No physical screen has been placed yet.");
         }
-        char diagnostics[256]{};
-        std::snprintf(diagnostics, sizeof(diagnostics),
-                      "World draw: scenes %llu | attempts %llu | success %llu | hr 0x%08lX | frame %ld | helper %s",
-                      static_cast<unsigned long long>(worldSceneCalls_),
-                      static_cast<unsigned long long>(drawAttempts_),
-                      static_cast<unsigned long long>(drawSuccesses_),
-                      static_cast<unsigned long>(lastDrawResult_), lastFrameSequence_,
-                      FindWindowW(kHostWindowClass, nullptr) ? "open" : "closed");
-        api_->UiText(diagnostics);
-        char projection[192]{};
-        if (projectedCenterValid_)
-            std::snprintf(projection, sizeof(projection),
-                          "Projected center NDC: %.3f, %.3f, %.3f | clip W %.3f (visible XY is -1 to +1)",
-                          projectedCenter_[0], projectedCenter_[1], projectedCenter_[2], projectedClipW_);
-        else
-            std::snprintf(projection, sizeof(projection),
-                          "Projected center unavailable | clip W %.3f", projectedClipW_);
-        api_->UiText(projection);
-        if (!texture_)
-            api_->UiText("No video frame yet: a bright four-color test card should still be visible in the world.");
+        if (!cinemaMode_)
+        {
+            char diagnostics[256]{};
+            std::snprintf(diagnostics, sizeof(diagnostics),
+                          "World draw: scenes %llu | attempts %llu | success %llu | hr 0x%08lX | frame %ld | helper %s",
+                          static_cast<unsigned long long>(worldSceneCalls_),
+                          static_cast<unsigned long long>(drawAttempts_),
+                          static_cast<unsigned long long>(drawSuccesses_),
+                          static_cast<unsigned long>(lastDrawResult_), lastFrameSequence_,
+                          FindWindowW(kHostWindowClass, nullptr) ? "open" : "closed");
+            api_->UiText(diagnostics);
+            char projection[192]{};
+            if (projectedCenterValid_)
+                std::snprintf(projection, sizeof(projection),
+                              "Projected center NDC: %.3f, %.3f, %.3f | clip W %.3f (visible XY is -1 to +1)",
+                              projectedCenter_[0], projectedCenter_[1], projectedCenter_[2], projectedClipW_);
+            else
+                std::snprintf(projection, sizeof(projection),
+                              "Projected center unavailable | clip W %.3f", projectedClipW_);
+            api_->UiText(projection);
+            if (!texture_)
+                api_->UiText("No video frame yet: a bright four-color test card should still be visible in the world.");
+        }
         api_->UiText(status_.c_str());
     }
 }
