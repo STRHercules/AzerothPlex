@@ -1878,6 +1878,31 @@ The retained M8 queue implementation now has its own **Host managed / Everyone m
 
 Automated coverage includes Plex fixtures, player/frame helpers, UI bridge/state tests, party identity/synchronization tests including duplicate and reordered packets, persisted session settings, queue permission enforcement, and relay room-state tests.
 
+### Implementation audit — 2026-09-29
+
+A code-vs-roadmap audit found that M23 Decorative Screen Frames was only partially implemented despite the earlier checkpoint: the eight named frame selections existed, but the renderer reduced each style to a one-pixel colored outline.
+
+M23 has now been advanced to actual cosmetic geometry in both world-space and pinned-screen rendering:
+
+- Classic Television uses a heavy bezel, lower cabinet, and feet.
+- Goblin Television uses a chunky shell with corner plates.
+- Gnomish Projector uses a slim brass surround with secondary rails.
+- Orcish Cinema uses a rugged surround with side lugs and lower bracing.
+- Blood Elf Arcane Screen uses a narrow gold frame with central crest geometry.
+- Titan Hologram uses double rails and corner nodes.
+- Tavern Projection Screen uses oversized top/bottom timber rails and side posts.
+- Outdoor Cinema uses a dark surround with support legs and feet.
+- Ambient lighting now renders as a separate sampled-color halo outside the selected cosmetic frame instead of replacing the frame color.
+
+The updated extension compiles successfully through the existing Win32 WarcraftXL MSVC project.
+
+The remaining roadmap boundaries after this audit are still:
+
+- Watch Together v1 requires a real two-client WoW validation run before it can be called multiplayer-validated.
+- M10 slash/social command integration is blocked by the current WarcraftXL ABI, so the copyable invite/code path remains the supported fallback.
+- M14 full WoW UI hiding/restoration is blocked by the current WarcraftXL API; the reversible compact-control Cinema Mode fallback remains in place.
+- M19 public room discovery remains experimental and disabled by default until relay authentication and moderation controls are implemented and configured for production use.
+
 ---
 
 # 50. Definition of Watch Together v1

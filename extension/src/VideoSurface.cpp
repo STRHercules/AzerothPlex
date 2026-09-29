@@ -48,6 +48,13 @@ namespace wxl_video_screen
             float u, v;
         };
 
+        struct ScreenVertex
+        {
+            float x, y, z, rhw;
+            D3DCOLOR color;
+            float u, v;
+        };
+
         bool CopyClipboardText(std::string_view text)
         {
             if (text.empty() || !OpenClipboard(nullptr)) return false;
@@ -88,6 +95,163 @@ namespace wxl_video_screen
             case 8: return 0xFF181818u; // Outdoor cinema.
             default: return 0xFF101010u;
             }
+        }
+
+        D3DCOLOR FrameAccentColor(int style)
+        {
+            switch (style)
+            {
+            case 1: return 0xFF111111u;
+            case 2: return 0xFFC58A25u;
+            case 3: return 0xFFE3C56Du;
+            case 4: return 0xFF2B100Du;
+            case 5: return 0xFFFFE0A3u;
+            case 6: return 0xFFA6F4FFu;
+            case 7: return 0xFF2A160Cu;
+            case 8: return 0xFF595959u;
+            default: return 0xFF202020u;
+            }
+        }
+
+        template <typename DrawRect>
+        HRESULT DrawDecorativeFrame(int style, float halfWidth, float halfHeight,
+                                    bool ambientLighting, D3DCOLOR ambientColor,
+                                    DrawRect&& drawRect)
+        {
+            if (style <= 0 && !ambientLighting) return S_OK;
+
+            HRESULT result = S_OK;
+            const auto draw = [&](float left, float right, float bottom, float top, D3DCOLOR color)
+            {
+                const HRESULT current = drawRect(left, right, bottom, top, color);
+                if (FAILED(current) && SUCCEEDED(result)) result = current;
+            };
+            const float tx = std::max(0.001f, halfWidth * 0.035f);
+            const float ty = std::max(0.001f, halfHeight * 0.060f);
+            const D3DCOLOR base = FrameColor(style);
+            const D3DCOLOR accent = FrameAccentColor(style);
+
+            const auto ring = [&](float xScale, float yScale, D3DCOLOR color)
+            {
+                const float x = tx * xScale;
+                const float y = ty * yScale;
+                draw(-halfWidth - x, halfWidth + x, halfHeight, halfHeight + y, color);
+                draw(-halfWidth - x, halfWidth + x, -halfHeight - y, -halfHeight, color);
+                draw(-halfWidth - x, -halfWidth, -halfHeight, halfHeight, color);
+                draw(halfWidth, halfWidth + x, -halfHeight, halfHeight, color);
+            };
+
+            switch (style)
+            {
+            case 1: // Classic Television: heavy bezel, lower cabinet, and feet.
+                ring(1.65f, 1.65f, base);
+                draw(-halfWidth * 0.62f, halfWidth * 0.62f,
+                     -halfHeight - ty * 2.45f, -halfHeight - ty * 1.65f, accent);
+                draw(-halfWidth * 0.72f, -halfWidth * 0.45f,
+                     -halfHeight - ty * 3.35f, -halfHeight - ty * 2.45f, base);
+                draw(halfWidth * 0.45f, halfWidth * 0.72f,
+                     -halfHeight - ty * 3.35f, -halfHeight - ty * 2.45f, base);
+                break;
+            case 2: // Goblin Television: chunky green shell with brass corner plates.
+                ring(1.25f, 1.25f, base);
+                draw(-halfWidth - tx * 2.0f, -halfWidth + tx * 0.25f,
+                     halfHeight - ty * 0.65f, halfHeight + ty * 1.95f, accent);
+                draw(halfWidth - tx * 0.25f, halfWidth + tx * 2.0f,
+                     halfHeight - ty * 0.65f, halfHeight + ty * 1.95f, accent);
+                draw(-halfWidth - tx * 2.0f, -halfWidth + tx * 0.25f,
+                     -halfHeight - ty * 1.95f, -halfHeight + ty * 0.65f, accent);
+                draw(halfWidth - tx * 0.25f, halfWidth + tx * 2.0f,
+                     -halfHeight - ty * 1.95f, -halfHeight + ty * 0.65f, accent);
+                break;
+            case 3: // Gnomish Projector: slim brass bezel with precision rails.
+                ring(0.80f, 0.80f, base);
+                draw(-halfWidth * 0.78f, halfWidth * 0.78f,
+                     halfHeight + ty * 1.05f, halfHeight + ty * 1.42f, accent);
+                draw(-halfWidth * 0.78f, halfWidth * 0.78f,
+                     -halfHeight - ty * 1.42f, -halfHeight - ty * 1.05f, accent);
+                draw(-halfWidth - tx * 1.35f, -halfWidth - tx * 0.80f,
+                     -halfHeight * 0.22f, halfHeight * 0.22f, accent);
+                draw(halfWidth + tx * 0.80f, halfWidth + tx * 1.35f,
+                     -halfHeight * 0.22f, halfHeight * 0.22f, accent);
+                break;
+            case 4: // Orcish Cinema: rugged red-brown surround with side lugs.
+                ring(1.35f, 1.35f, base);
+                draw(-halfWidth - tx * 2.35f, -halfWidth - tx * 1.35f,
+                     halfHeight * 0.38f, halfHeight * 0.78f, accent);
+                draw(-halfWidth - tx * 2.35f, -halfWidth - tx * 1.35f,
+                     -halfHeight * 0.78f, -halfHeight * 0.38f, accent);
+                draw(halfWidth + tx * 1.35f, halfWidth + tx * 2.35f,
+                     halfHeight * 0.38f, halfHeight * 0.78f, accent);
+                draw(halfWidth + tx * 1.35f, halfWidth + tx * 2.35f,
+                     -halfHeight * 0.78f, -halfHeight * 0.38f, accent);
+                draw(-halfWidth * 0.52f, halfWidth * 0.52f,
+                     -halfHeight - ty * 2.05f, -halfHeight - ty * 1.35f, accent);
+                break;
+            case 5: // Blood Elf Arcane Screen: narrow gold frame and central arcane crests.
+                ring(0.65f, 0.65f, base);
+                draw(-halfWidth * 0.18f, halfWidth * 0.18f,
+                     halfHeight + ty * 0.65f, halfHeight + ty * 2.05f, accent);
+                draw(-halfWidth * 0.18f, halfWidth * 0.18f,
+                     -halfHeight - ty * 2.05f, -halfHeight - ty * 0.65f, accent);
+                draw(-halfWidth - tx * 1.45f, -halfWidth - tx * 0.65f,
+                     -halfHeight * 0.16f, halfHeight * 0.16f, accent);
+                draw(halfWidth + tx * 0.65f, halfWidth + tx * 1.45f,
+                     -halfHeight * 0.16f, halfHeight * 0.16f, accent);
+                break;
+            case 6: // Titan Hologram: double luminous rail with corner nodes.
+                ring(0.55f, 0.55f, base);
+                ring(1.25f, 1.25f, accent);
+                draw(-halfWidth - tx * 1.75f, -halfWidth - tx * 0.25f,
+                     halfHeight + ty * 0.25f, halfHeight + ty * 1.75f, accent);
+                draw(halfWidth + tx * 0.25f, halfWidth + tx * 1.75f,
+                     halfHeight + ty * 0.25f, halfHeight + ty * 1.75f, accent);
+                draw(-halfWidth - tx * 1.75f, -halfWidth - tx * 0.25f,
+                     -halfHeight - ty * 1.75f, -halfHeight - ty * 0.25f, accent);
+                draw(halfWidth + tx * 0.25f, halfWidth + tx * 1.75f,
+                     -halfHeight - ty * 1.75f, -halfHeight - ty * 0.25f, accent);
+                break;
+            case 7: // Tavern Projection Screen: oversized timber rails and side posts.
+                draw(-halfWidth - tx * 1.15f, halfWidth + tx * 1.15f,
+                     halfHeight, halfHeight + ty * 2.10f, base);
+                draw(-halfWidth - tx * 1.15f, halfWidth + tx * 1.15f,
+                     -halfHeight - ty * 2.10f, -halfHeight, base);
+                draw(-halfWidth - tx * 1.15f, -halfWidth,
+                     -halfHeight - ty * 0.65f, halfHeight + ty * 0.65f, accent);
+                draw(halfWidth, halfWidth + tx * 1.15f,
+                     -halfHeight - ty * 0.65f, halfHeight + ty * 0.65f, accent);
+                break;
+            case 8: // Outdoor Cinema: simple dark surround with two support legs.
+                ring(0.85f, 0.85f, base);
+                draw(-halfWidth * 0.72f, -halfWidth * 0.60f,
+                     -halfHeight - ty * 4.50f, -halfHeight - ty * 0.85f, accent);
+                draw(halfWidth * 0.60f, halfWidth * 0.72f,
+                     -halfHeight - ty * 4.50f, -halfHeight - ty * 0.85f, accent);
+                draw(-halfWidth * 0.88f, -halfWidth * 0.44f,
+                     -halfHeight - ty * 4.90f, -halfHeight - ty * 4.50f, base);
+                draw(halfWidth * 0.44f, halfWidth * 0.88f,
+                     -halfHeight - ty * 4.90f, -halfHeight - ty * 4.50f, base);
+                break;
+            default:
+                break;
+            }
+
+            if (ambientLighting)
+            {
+                // Low-cost ambience: a thin sampled-color halo outside the cosmetic geometry.
+                const float x = tx * (style == 0 ? 0.65f : 2.65f);
+                const float y = ty * (style == 0 ? 0.65f : 2.65f);
+                const float haloX = tx * 0.28f;
+                const float haloY = ty * 0.28f;
+                draw(-halfWidth - x - haloX, halfWidth + x + haloX,
+                     halfHeight + y, halfHeight + y + haloY, ambientColor);
+                draw(-halfWidth - x - haloX, halfWidth + x + haloX,
+                     -halfHeight - y - haloY, -halfHeight - y, ambientColor);
+                draw(-halfWidth - x - haloX, -halfWidth - x,
+                     -halfHeight - y, halfHeight + y, ambientColor);
+                draw(halfWidth + x, halfWidth + x + haloX,
+                     -halfHeight - y, halfHeight + y, ambientColor);
+            }
+            return result;
         }
 
         void FormatTime(char* output, size_t size, uint32_t milliseconds)
@@ -1088,19 +1252,19 @@ namespace wxl_video_screen
             { center_[0] + right_[0] * videoHalfWidth, center_[1] + right_[1] * videoHalfWidth,
               center_[2] - videoHalfHeight, bottomRight, u0, v1 },
         };
-        const D3DCOLOR surroundColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
-            : (frameStyle_ > 0 ? FrameColor(frameStyle_) : 0xFFFFFF00u);
+        const D3DCOLOR outlineColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
+            : (frameStyle_ > 0 ? FrameAccentColor(frameStyle_) : 0xFFFFFF00u);
         const Vertex border[5] = {
             { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
-              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
+              center_[2] + halfHeight, outlineColor, 0.0f, 0.0f },
             { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
-              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
+              center_[2] + halfHeight, outlineColor, 0.0f, 0.0f },
             { center_[0] + right_[0] * halfWidth, center_[1] + right_[1] * halfWidth,
-              center_[2] - halfHeight, surroundColor, 0.0f, 0.0f },
+              center_[2] - halfHeight, outlineColor, 0.0f, 0.0f },
             { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
-              center_[2] - halfHeight, surroundColor, 0.0f, 0.0f },
+              center_[2] - halfHeight, outlineColor, 0.0f, 0.0f },
             { center_[0] - right_[0] * halfWidth, center_[1] - right_[1] * halfWidth,
-              center_[2] + halfHeight, surroundColor, 0.0f, 0.0f },
+              center_[2] + halfHeight, outlineColor, 0.0f, 0.0f },
         };
 
         IDirect3DStateBlock9* state = nullptr;
@@ -1232,8 +1396,34 @@ namespace wxl_video_screen
             device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
             device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
             device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-            borderResult = device->DrawPrimitiveUP(
-                D3DPT_LINESTRIP, 4, border, sizeof(Vertex));
+
+            if (frameStyle_ > 0 || ambientLighting_)
+            {
+                borderResult = DrawDecorativeFrame(
+                    frameStyle_, halfWidth, halfHeight, ambientLighting_ != 0,
+                    static_cast<D3DCOLOR>(ambientColor_),
+                    [&](float left, float right, float bottom, float top, D3DCOLOR color)
+                    {
+                        const Vertex quad[4] = {
+                            { center_[0] + right_[0] * left, center_[1] + right_[1] * left,
+                              center_[2] + top, color, 0.0f, 0.0f },
+                            { center_[0] + right_[0] * right, center_[1] + right_[1] * right,
+                              center_[2] + top, color, 0.0f, 0.0f },
+                            { center_[0] + right_[0] * left, center_[1] + right_[1] * left,
+                              center_[2] + bottom, color, 0.0f, 0.0f },
+                            { center_[0] + right_[0] * right, center_[1] + right_[1] * right,
+                              center_[2] + bottom, color, 0.0f, 0.0f },
+                        };
+                        return device->DrawPrimitiveUP(
+                            D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+                    });
+            }
+            if (outline_)
+            {
+                const HRESULT outlineResult = device->DrawPrimitiveUP(
+                    D3DPT_LINESTRIP, 4, border, sizeof(Vertex));
+                if (FAILED(outlineResult) && SUCCEEDED(borderResult)) borderResult = outlineResult;
+            }
         }
         lastDrawResult_ = FAILED(drawResult) ? drawResult : borderResult;
         if (SUCCEEDED(drawResult) && SUCCEEDED(borderResult))
@@ -1294,12 +1484,6 @@ namespace wxl_video_screen
         float bottom = 0.0f;
         if (!GetPinnedRect(device, left, top, right, bottom)) return;
 
-        struct ScreenVertex
-        {
-            float x, y, z, rhw;
-            D3DCOLOR color;
-            float u, v;
-        };
         const D3DCOLOR topLeft = texture_ ? 0xFFFFFFFFu : 0xFFFF2D55u;
         const D3DCOLOR topRight = texture_ ? 0xFFFFFFFFu : 0xFFFFD60Au;
         const D3DCOLOR bottomLeft = texture_ ? 0xFFFFFFFFu : 0xFF00E5FFu;
@@ -1323,14 +1507,14 @@ namespace wxl_video_screen
             {videoLeft, videoBottom, 0.0f, 1.0f, bottomLeft, u0, v1},
             {videoRight, videoBottom, 0.0f, 1.0f, bottomRight, u1, v1},
         };
-        const D3DCOLOR surroundColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
-            : (frameStyle_ > 0 ? FrameColor(frameStyle_) : 0xFFFFFF00u);
+        const D3DCOLOR outlineColor = ambientLighting_ ? static_cast<D3DCOLOR>(ambientColor_)
+            : (frameStyle_ > 0 ? FrameAccentColor(frameStyle_) : 0xFFFFFF00u);
         const ScreenVertex border[5] = {
-            {left, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
-            {right, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
-            {right, bottom, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
-            {left, bottom, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
-            {left, top, 0.0f, 1.0f, surroundColor, 0.0f, 0.0f},
+            {left, top, 0.0f, 1.0f, outlineColor, 0.0f, 0.0f},
+            {right, top, 0.0f, 1.0f, outlineColor, 0.0f, 0.0f},
+            {right, bottom, 0.0f, 1.0f, outlineColor, 0.0f, 0.0f},
+            {left, bottom, 0.0f, 1.0f, outlineColor, 0.0f, 0.0f},
+            {left, top, 0.0f, 1.0f, outlineColor, 0.0f, 0.0f},
         };
 
         IDirect3DStateBlock9* state = nullptr;
@@ -1387,8 +1571,35 @@ namespace wxl_video_screen
             device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
             device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
             device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-            borderResult = device->DrawPrimitiveUP(
-                D3DPT_LINESTRIP, 4, border, sizeof(ScreenVertex));
+
+            if (frameStyle_ > 0 || ambientLighting_)
+            {
+                borderResult = DrawDecorativeFrame(
+                    frameStyle_, targetHalfWidth, targetHalfHeight, ambientLighting_ != 0,
+                    static_cast<D3DCOLOR>(ambientColor_),
+                    [&](float rectLeft, float rectRight, float rectBottom, float rectTop,
+                        D3DCOLOR color)
+                    {
+                        const ScreenVertex quad[4] = {
+                            {centerX + rectLeft, centerY - rectTop, 0.0f, 1.0f,
+                             color, 0.0f, 0.0f},
+                            {centerX + rectRight, centerY - rectTop, 0.0f, 1.0f,
+                             color, 0.0f, 0.0f},
+                            {centerX + rectLeft, centerY - rectBottom, 0.0f, 1.0f,
+                             color, 0.0f, 0.0f},
+                            {centerX + rectRight, centerY - rectBottom, 0.0f, 1.0f,
+                             color, 0.0f, 0.0f},
+                        };
+                        return device->DrawPrimitiveUP(
+                            D3DPT_TRIANGLESTRIP, 2, quad, sizeof(ScreenVertex));
+                    });
+            }
+            if (outline_)
+            {
+                const HRESULT outlineResult = device->DrawPrimitiveUP(
+                    D3DPT_LINESTRIP, 4, border, sizeof(ScreenVertex));
+                if (FAILED(outlineResult) && SUCCEEDED(borderResult)) borderResult = outlineResult;
+            }
         }
         lastDrawResult_ = FAILED(drawResult) ? drawResult : borderResult;
         if (SUCCEEDED(drawResult) && SUCCEEDED(borderResult)) ++drawSuccesses_;
