@@ -1868,12 +1868,15 @@ The canonical repo now contains implementation paths for the retained milestones
 
 The removed M15–M17 and M20–M21 features are intentionally not part of the implementation order.
 
-Two items remain validation/deployment boundaries rather than missing feature code:
+Three items remain validation/API boundaries rather than missing feature code:
 
 - the Watch Together v1 definition below still requires a real two-client WoW test before it may be called multiplayer-validated;
-- WarcraftXL does not currently expose a safe action-bar/minimap hide/restore API, so Cinema Mode uses the documented reversible compact-control fallback instead of mutating WoW interface state.
+- WarcraftXL does not currently expose a safe action-bar/minimap hide/restore API, so Cinema Mode uses the documented reversible compact-control fallback instead of mutating WoW interface state;
+- WarcraftXL ABI 1.1 does not expose a safe slash-command or WoW social-command registration API, so M10 ships the copyable party invite/code path and does not invent `/plex` command hooks.
 
-Automated coverage includes Plex fixtures, player/frame helpers, UI bridge/state tests, party identity/synchronization tests including duplicate and reordered packets, persisted session settings, and relay room-state tests.
+The retained M8 queue implementation now has its own **Host managed / Everyone may add** permission independent of playback control. In Everyone-may-add mode guests may append items, while host-only removal and reordering remain enforced by both the host UI and relay.
+
+Automated coverage includes Plex fixtures, player/frame helpers, UI bridge/state tests, party identity/synchronization tests including duplicate and reordered packets, persisted session settings, queue permission enforcement, and relay room-state tests.
 
 ---
 
@@ -1912,7 +1915,6 @@ Azeroth Cinema v1 is complete when:
 - ready checks exist
 - shared queue exists
 - reconnect works
-- reactions exist
 - mini player exists
 - users can enter a distraction-reduced cinema mode
 - room diagnostics are available

@@ -211,7 +211,7 @@ namespace wxl_plex
                 return {0, GetLastError(), {}};
             }
 
-            HINTERNET session = WinHttpOpen(L"AzerothPlex/0.5.0",
+            HINTERNET session = WinHttpOpen(L"AzerothPlex/1.5.0",
                                              WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
             if (!session) return {0, GetLastError(), {}};
@@ -238,7 +238,7 @@ namespace wxl_plex
                 ? L"Accept: application/json\r\n"
                 : L"Accept: application/xml\r\n";
             headers += L"X-Plex-Client-Identifier: " + Wide(clientId) + L"\r\n";
-            headers += L"X-Plex-Product: AzerothPlex\r\nX-Plex-Version: 0.5.0\r\n";
+            headers += L"X-Plex-Product: AzerothPlex\r\nX-Plex-Version: 1.5.0\r\n";
             headers += L"X-Plex-Platform: Windows\r\nX-Plex-Device: WarcraftXL\r\n";
             if (containerStart >= 0)
                 headers += L"X-Plex-Container-Start: " +

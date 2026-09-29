@@ -13,6 +13,7 @@ namespace wxl_party
         std::string displayName = "Player";
         std::string lastRoomCode;
         PartyPermissionMode permissionMode = PartyPermissionMode::HostOnly;
+        PartyQueueMode queueMode = PartyQueueMode::HostManaged;
         DisconnectPolicy disconnectPolicy = DisconnectPolicy::KeepPlaying;
         bool syncAudio = false;
         bool syncSubtitles = false;

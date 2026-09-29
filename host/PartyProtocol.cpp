@@ -158,6 +158,7 @@ namespace wxl_party
                 {"mode", static_cast<int>(permissions.mode)},
                 {"syncAudio", permissions.syncAudio},
                 {"syncSubtitles", permissions.syncSubtitles},
+                {"queueMode", static_cast<int>(permissions.queueMode)},
             };
         }
 
@@ -171,6 +172,10 @@ namespace wxl_party
                 permissions.mode = static_cast<PartyPermissionMode>(mode);
             permissions.syncAudio = value.value("syncAudio", false);
             permissions.syncSubtitles = value.value("syncSubtitles", false);
+            const int queueMode = value.value("queueMode", 0);
+            if (queueMode >= static_cast<int>(PartyQueueMode::HostManaged) &&
+                queueMode <= static_cast<int>(PartyQueueMode::EveryoneMayAdd))
+                permissions.queueMode = static_cast<PartyQueueMode>(queueMode);
             return permissions;
         }
 

@@ -36,6 +36,11 @@ namespace wxl_party
                 permission <= static_cast<int>(PartyPermissionMode::RequestControl))
                 settings.permissionMode = static_cast<PartyPermissionMode>(permission);
 
+            const int queueMode = object.value("queueMode", 0);
+            if (queueMode >= static_cast<int>(PartyQueueMode::HostManaged) &&
+                queueMode <= static_cast<int>(PartyQueueMode::EveryoneMayAdd))
+                settings.queueMode = static_cast<PartyQueueMode>(queueMode);
+
             const int disconnect = object.value("disconnectPolicy", 0);
             if (disconnect >= static_cast<int>(DisconnectPolicy::KeepPlaying) &&
                 disconnect <= static_cast<int>(DisconnectPolicy::AskHost))
@@ -76,6 +81,7 @@ namespace wxl_party
             {"displayName", settings.displayName},
             {"lastRoomCode", settings.lastRoomCode},
             {"permissionMode", static_cast<int>(settings.permissionMode)},
+            {"queueMode", static_cast<int>(settings.queueMode)},
             {"disconnectPolicy", static_cast<int>(settings.disconnectPolicy)},
             {"syncAudio", settings.syncAudio},
             {"syncSubtitles", settings.syncSubtitles},

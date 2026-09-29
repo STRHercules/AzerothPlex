@@ -78,6 +78,46 @@ def test_public_room_listing_only_exposes_public_rooms():
     assert private_code not in codes
 
 
+def test_everyone_may_add_queue_does_not_grant_guest_reorder():
+    state = RelayState()
+    created = state.handle("host", message(
+        "room_create", "host", payload={"permissions": {"queueMode": 1}}
+    ))
+    room_code = first_message(created)["room"]
+    state.handle("guest", message("room_join", "guest", room_code))
+
+    first_item = {"media": {"title": "Alien"}, "addedBy": "host", "order": 1}
+    seeded = state.handle("host", message(
+        "queue_update", "host", room_code, {"queue": [first_item]}
+    ))
+    assert first_message(seeded)["type"] == "queue_update"
+
+    second_item = {"media": {"title": "The Thing"}, "addedBy": "spoofed", "order": 99}
+    added = state.handle("guest", message(
+        "queue_update", "guest", room_code, {"queue": [first_item, second_item]}
+    ))
+    outbound = first_message(added)
+    assert outbound["type"] == "queue_update"
+    assert outbound["payload"]["queue"][-1]["addedBy"] == "guest"
+    assert outbound["payload"]["queue"][-1]["order"] == 2
+
+    rejected = state.handle("guest", message(
+        "queue_update", "guest", room_code, {"queue": [outbound["payload"]["queue"][-1]]}
+    ))
+    assert first_message(rejected)["type"] == "error"
+
+
+def test_host_managed_queue_rejects_guest_add():
+    state = RelayState()
+    room_code = first_message(state.handle("host", message("room_create", "host")))["room"]
+    state.handle("guest", message("room_join", "guest", room_code))
+    result = state.handle("guest", message(
+        "queue_update", "guest", room_code,
+        {"queue": [{"media": {"title": "Alien"}, "addedBy": "guest", "order": 1}]},
+    ))
+    assert first_message(result)["type"] == "error"
+
+
 def test_ready_check_waits_for_everyone_then_uses_shared_start_epoch():
     state = RelayState()
     room_code = first_message(state.handle("host", message("room_create", "host")))["room"]

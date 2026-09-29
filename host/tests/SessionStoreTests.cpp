@@ -22,6 +22,7 @@ int main()
     settings.displayName = "Test Viewer";
     settings.lastRoomCode = "AZ-TEST";
     settings.permissionMode = PartyPermissionMode::SharedControl;
+    settings.queueMode = PartyQueueMode::EveryoneMayAdd;
     settings.syncAudio = true;
     settings.playbackSpeed = 1.5;
     settings.noCorrectionDriftMs = 300;
@@ -33,6 +34,7 @@ int main()
     CHECK(loaded.displayName == settings.displayName);
     CHECK(loaded.lastRoomCode == settings.lastRoomCode);
     CHECK(loaded.permissionMode == PartyPermissionMode::SharedControl);
+    CHECK(loaded.queueMode == PartyQueueMode::EveryoneMayAdd);
     CHECK(loaded.syncAudio);
     CHECK(std::abs(loaded.playbackSpeed - 1.5) < 0.001);
     CHECK(loaded.noCorrectionDriftMs == 300);

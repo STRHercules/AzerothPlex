@@ -37,6 +37,12 @@ namespace wxl_party
         RequestControl,
     };
 
+    enum class PartyQueueMode
+    {
+        HostManaged,
+        EveryoneMayAdd,
+    };
+
     enum class DisconnectPolicy
     {
         KeepPlaying,
@@ -167,6 +173,7 @@ namespace wxl_party
         PartyPermissionMode mode = PartyPermissionMode::HostOnly;
         bool syncAudio = false;
         bool syncSubtitles = false;
+        PartyQueueMode queueMode = PartyQueueMode::HostManaged;
     };
 
     struct CinemaSettings

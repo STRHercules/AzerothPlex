@@ -1796,27 +1796,34 @@ namespace wxl_video_screen
             api_->UiText("Create a room or join another AzerothPlex viewer.");
             if (api_->UiButton("Create private watch party"))
                 SendUiCommand(wxl_video_shared::UiCommand::CreateParty);
-            api_->UiSameLine();
-            if (api_->UiButton("Create public watch party"))
-                SendUiCommand(wxl_video_shared::UiCommand::CreatePublicParty);
+            if (uiState_.partyPublicRoomsEnabled)
+            {
+                api_->UiSameLine();
+                if (api_->UiButton("Create public watch party"))
+                    SendUiCommand(wxl_video_shared::UiCommand::CreatePublicParty);
+            }
             api_->UiInputText("Watch-party code", partyCode_, sizeof(partyCode_));
             if (api_->UiButton("Join watch party"))
                 SendUiCommand(wxl_video_shared::UiCommand::JoinParty, -1, 0, partyCode_);
-            if (api_->UiButton("Refresh public rooms"))
-                SendUiCommand(wxl_video_shared::UiCommand::RefreshPublicRooms);
 
-            const uint32_t roomCount = static_cast<uint32_t>(std::min(
-                static_cast<size_t>(uiState_.publicRoomCount), wxl_video_shared::kUiMaxPublicRooms));
-            for (uint32_t index = 0; index < roomCount; ++index)
+            if (uiState_.partyPublicRoomsEnabled)
             {
-                const auto& room = uiState_.publicRooms[index];
-                char label[256]{};
-                std::snprintf(label, sizeof(label), "Join %s - %s (%ld viewer%s)",
-                              room.code, room.title[0] ? room.title : "Watch Party",
-                              static_cast<long>(room.memberCount), room.memberCount == 1 ? "" : "s");
-                if (api_->UiButton(label))
-                    SendUiCommand(wxl_video_shared::UiCommand::JoinPublicRoom,
-                                  static_cast<LONG>(index));
+                if (api_->UiButton("Refresh public rooms"))
+                    SendUiCommand(wxl_video_shared::UiCommand::RefreshPublicRooms);
+
+                const uint32_t roomCount = static_cast<uint32_t>(std::min(
+                    static_cast<size_t>(uiState_.publicRoomCount), wxl_video_shared::kUiMaxPublicRooms));
+                for (uint32_t index = 0; index < roomCount; ++index)
+                {
+                    const auto& room = uiState_.publicRooms[index];
+                    char label[256]{};
+                    std::snprintf(label, sizeof(label), "Join %s - %s (%ld viewer%s)",
+                                  room.code, room.title[0] ? room.title : "Watch Party",
+                                  static_cast<long>(room.memberCount), room.memberCount == 1 ? "" : "s");
+                    if (api_->UiButton(label))
+                        SendUiCommand(wxl_video_shared::UiCommand::JoinPublicRoom,
+                                      static_cast<LONG>(index));
+                }
             }
             return;
         }
@@ -1916,9 +1923,13 @@ namespace wxl_video_screen
         if (api_->UiButton("Back to watch party"))
             SendUiCommand(wxl_video_shared::UiCommand::SetView, -1,
                           static_cast<LONG>(wxl_video_shared::UiView::Party));
-        api_->UiSameLine();
-        if (uiState_.item.ratingKey[0] && api_->UiButton("Add selected Plex item"))
-            SendUiCommand(wxl_video_shared::UiCommand::AddCurrentToQueue);
+        const bool mayAdd = uiState_.partyRole == 1 || uiState_.partyQueueMode == 1;
+        if (mayAdd && uiState_.item.ratingKey[0])
+        {
+            api_->UiSameLine();
+            if (api_->UiButton("Add selected Plex item"))
+                SendUiCommand(wxl_video_shared::UiCommand::AddCurrentToQueue);
+        }
 
         const uint32_t count = static_cast<uint32_t>(std::min(
             static_cast<size_t>(uiState_.partyQueueCount), wxl_video_shared::kUiMaxPartyQueue));
@@ -1935,21 +1946,24 @@ namespace wxl_video_screen
             if (api_->UiButton((std::string("Play##q") + std::to_string(index)).c_str()))
                 SendUiCommand(wxl_video_shared::UiCommand::PlayQueueItem,
                               static_cast<LONG>(index));
-            api_->UiSameLine();
-            if (index > 0 && api_->UiButton((std::string("Up##q") + std::to_string(index)).c_str()))
-                SendUiCommand(wxl_video_shared::UiCommand::MoveQueueItem,
-                              static_cast<LONG>(index), static_cast<LONG>(index - 1));
-            if (index + 1 < count)
+            if (uiState_.partyRole == 1)
             {
                 api_->UiSameLine();
-                if (api_->UiButton((std::string("Down##q") + std::to_string(index)).c_str()))
+                if (index > 0 && api_->UiButton((std::string("Up##q") + std::to_string(index)).c_str()))
                     SendUiCommand(wxl_video_shared::UiCommand::MoveQueueItem,
-                                  static_cast<LONG>(index), static_cast<LONG>(index + 1));
+                                  static_cast<LONG>(index), static_cast<LONG>(index - 1));
+                if (index + 1 < count)
+                {
+                    api_->UiSameLine();
+                    if (api_->UiButton((std::string("Down##q") + std::to_string(index)).c_str()))
+                        SendUiCommand(wxl_video_shared::UiCommand::MoveQueueItem,
+                                      static_cast<LONG>(index), static_cast<LONG>(index + 1));
+                }
+                api_->UiSameLine();
+                if (api_->UiButton((std::string("Remove##q") + std::to_string(index)).c_str()))
+                    SendUiCommand(wxl_video_shared::UiCommand::RemoveQueueItem,
+                                  static_cast<LONG>(index));
             }
-            api_->UiSameLine();
-            if (api_->UiButton((std::string("Remove##q") + std::to_string(index)).c_str()))
-                SendUiCommand(wxl_video_shared::UiCommand::RemoveQueueItem,
-                              static_cast<LONG>(index));
         }
     }
 
@@ -1960,19 +1974,30 @@ namespace wxl_video_screen
                           static_cast<LONG>(uiState_.partyRoomCode[0]
                               ? wxl_video_shared::UiView::Party : wxl_video_shared::UiView::Home));
         api_->UiText("Watch Together defaults");
-        int mode = static_cast<int>(uiState_.partyPermissionMode);
-        if (api_->UiSliderInt("Control mode (0 host, 1 shared, 2 request)", &mode, 0, 2))
-            SendUiCommand(wxl_video_shared::UiCommand::SetPartyPermissionMode, -1, mode);
-        int syncAudio = uiState_.partySyncAudio ? 1 : 0;
-        if (api_->UiCheckbox("Synchronize audio selection", &syncAudio))
-            SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncAudio, -1, syncAudio);
-        int syncSubtitles = uiState_.partySyncSubtitles ? 1 : 0;
-        if (api_->UiCheckbox("Synchronize subtitle selection", &syncSubtitles))
-            SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncSubtitles, -1, syncSubtitles);
-        static int disconnectPolicy = 0;
-        if (api_->UiSliderInt("Disconnect policy (0 keep, 1 pause 60s, 2 pause until return, 3 ask)",
-                              &disconnectPolicy, 0, 3))
-            SendUiCommand(wxl_video_shared::UiCommand::SetDisconnectPolicy, -1, disconnectPolicy);
+        const bool mayEditRoomSettings = !uiState_.partyRoomCode[0] || uiState_.partyRole == 1;
+        if (mayEditRoomSettings)
+        {
+            int mode = static_cast<int>(uiState_.partyPermissionMode);
+            if (api_->UiSliderInt("Control mode (0 host, 1 shared, 2 request)", &mode, 0, 2))
+                SendUiCommand(wxl_video_shared::UiCommand::SetPartyPermissionMode, -1, mode);
+            int queueMode = static_cast<int>(uiState_.partyQueueMode);
+            if (api_->UiSliderInt("Queue mode (0 host managed, 1 everyone may add)", &queueMode, 0, 1))
+                SendUiCommand(wxl_video_shared::UiCommand::SetPartyQueueMode, -1, queueMode);
+            int syncAudio = uiState_.partySyncAudio ? 1 : 0;
+            if (api_->UiCheckbox("Synchronize audio selection", &syncAudio))
+                SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncAudio, -1, syncAudio);
+            int syncSubtitles = uiState_.partySyncSubtitles ? 1 : 0;
+            if (api_->UiCheckbox("Synchronize subtitle selection", &syncSubtitles))
+                SendUiCommand(wxl_video_shared::UiCommand::SetPartySyncSubtitles, -1, syncSubtitles);
+            int disconnectPolicy = static_cast<int>(uiState_.partyDisconnectPolicy);
+            if (api_->UiSliderInt("Disconnect policy (0 keep, 1 pause 60s, 2 pause until return, 3 ask)",
+                                  &disconnectPolicy, 0, 3))
+                SendUiCommand(wxl_video_shared::UiCommand::SetDisconnectPolicy, -1, disconnectPolicy);
+        }
+        else
+        {
+            api_->UiText("Only the watch-party host can change active room settings.");
+        }
     }
 
     void VideoSurface::DrawMiniPlayer()

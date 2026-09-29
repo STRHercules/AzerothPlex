@@ -136,6 +136,7 @@ namespace wxl_party
             message.permissions.mode = settings_.permissionMode;
             message.permissions.syncAudio = settings_.syncAudio;
             message.permissions.syncSubtitles = settings_.syncSubtitles;
+            message.permissions.queueMode = settings_.queueMode;
         }
         message.visibility = visibility;
         Queue(std::move(message));

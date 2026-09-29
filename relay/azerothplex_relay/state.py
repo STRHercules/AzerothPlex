@@ -33,10 +33,14 @@ def permissions(payload: dict[str, Any] | None) -> dict[str, Any]:
     mode = source.get("mode", 0)
     if mode not in (0, 1, 2):
         mode = 0
+    queue_mode = source.get("queueMode", 0)
+    if queue_mode not in (0, 1):
+        queue_mode = 0
     return {
         "mode": mode,
         "syncAudio": bool(source.get("syncAudio", False)),
         "syncSubtitles": bool(source.get("syncSubtitles", False)),
+        "queueMode": queue_mode,
     }
 
 
@@ -420,10 +424,21 @@ class RelayState:
             return [Delivery([target_id], event)]
 
         if message_type == "queue_update":
-            if not can_control:
-                return [self._error(client_id, "You do not have permission to change the party queue.", room)]
             queue = payload.get("queue") if isinstance(payload.get("queue"), list) else []
-            room.queue = queue[:MAX_QUEUE]
+            queue = [item for item in queue[:MAX_QUEUE] if isinstance(item, dict)]
+            if is_host:
+                room.queue = queue
+                for index, item in enumerate(room.queue):
+                    item["order"] = index + 1
+            else:
+                if room.permissions.get("queueMode", 0) != 1:
+                    return [self._error(client_id, "Only the host may add to this party queue.", room)]
+                if len(queue) != len(room.queue) + 1 or queue[:-1] != room.queue:
+                    return [self._error(client_id, "Guests may add one item but cannot remove or reorder the party queue.", room)]
+                appended = dict(queue[-1])
+                appended["addedBy"] = client_id
+                appended["order"] = len(room.queue) + 1
+                room.queue = [*room.queue, appended]
             room.next_sequence()
             event = self._envelope("queue_update", room=room, payload={"queue": room.queue})
             return [self._broadcast(room, event)]

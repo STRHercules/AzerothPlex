@@ -54,10 +54,11 @@ Guests resolve the host's media against their own Plex library and follow the
 relay's authoritative playback state.
 
 Watch Together currently includes host/shared/request-control modes, optional
-semantic audio/subtitle matching, a shared queue, all-ready synchronized starts,
-host migration, reconnect grace, disconnect policies, shared cinema layout,
-relay RTT/drift diagnostics, and a compact mini-player. The mini-player includes
-10-second seek controls and its enabled state is saved locally.
+semantic audio/subtitle matching, a shared queue with independent **Host managed**
+and **Everyone may add** policies, all-ready synchronized starts, host migration,
+reconnect grace, disconnect policies, shared cinema layout, relay RTT/drift
+diagnostics, and a compact mini-player. The mini-player includes 10-second seek
+controls and its enabled state is saved locally.
 
 Public room discovery is implemented but intentionally disabled by default. The
 roadmap requires authentication plus abuse/moderation controls before public

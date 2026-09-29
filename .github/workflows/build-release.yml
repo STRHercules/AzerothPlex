@@ -83,7 +83,10 @@ jobs:
           Copy-Item "wxl-core/build/dll/Release/wxl-azeroth-plex.dll" $stage
           Copy-Item "host/build/Release/wxl-video-host.exe" $stage
           Copy-Item "third_party/mpv/libmpv-2.dll" $stage
-          Copy-Item 'wxl.json','README.md','THIRD_PARTY_NOTICES.md','LICENSE' $stage
+          Copy-Item 'wxl.json','README.md','LICENSE' $stage
+          if (Test-Path 'THIRD_PARTY_NOTICES.md') {
+            Copy-Item 'THIRD_PARTY_NOTICES.md' $stage
+          }
 
           $archive = Join-Path $env:GITHUB_WORKSPACE "$packageName.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -Force

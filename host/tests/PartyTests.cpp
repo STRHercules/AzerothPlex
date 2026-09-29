@@ -85,6 +85,16 @@ int main()
     CHECK(parsed.playback.positionMs == 42000);
     CHECK(parsed.playback.media.plexGuid == local.plexGuid);
 
+    PartyWireMessage permissionsMessage;
+    permissionsMessage.type = PartyMessageType::Permissions;
+    permissionsMessage.roomCode = "AZ-7K3F";
+    permissionsMessage.senderId = "client-a";
+    permissionsMessage.permissions.mode = PartyPermissionMode::HostOnly;
+    permissionsMessage.permissions.queueMode = PartyQueueMode::EveryoneMayAdd;
+    CHECK(ParsePartyMessage(SerializePartyMessage(permissionsMessage), parsed, error));
+    CHECK(parsed.permissions.mode == PartyPermissionMode::HostOnly);
+    CHECK(parsed.permissions.queueMode == PartyQueueMode::EveryoneMayAdd);
+
     PartyWireMessage readyMessage;
     readyMessage.type = PartyMessageType::ReadyCheck;
     readyMessage.roomCode = "AZ-7K3F";

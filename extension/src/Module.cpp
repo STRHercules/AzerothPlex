@@ -45,6 +45,6 @@ int __cdecl WXL_Load(const WXL_Api* api)
 
     api->UiAddPanel("Azeroth Plex", &DrawPanel, nullptr);
     api->Log(WXL_LOG_INFO, kTag,
-             "0.5.0 loaded: native Plex screen + in-game Plex UI");
+             "1.5.0 loaded: native Plex screen + Watch Together UI");
     return 1;
 }

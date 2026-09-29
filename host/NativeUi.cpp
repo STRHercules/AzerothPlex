@@ -241,7 +241,8 @@ namespace wxl_ui
         partySettings_ = std::move(settings);
         sync_->SetPermissions({partySettings_.permissionMode,
                                partySettings_.syncAudio,
-                               partySettings_.syncSubtitles});
+                               partySettings_.syncSubtitles,
+                               partySettings_.queueMode});
         sync_->SetThresholds(partySettings_.noCorrectionDriftMs,
                              partySettings_.hardSeekDriftMs);
         if (player_) player_->SetPlaybackSpeed(partySettings_.playbackSpeed);
@@ -364,7 +365,7 @@ namespace wxl_ui
                 if (event.item.ratingKey.empty())
                 {
                     pendingRemoteMedia_ = false;
-                    pendingQueueAdvance_ = false;
+                    pendingQueueIndex_ = -1;
                     partyMediaMatch_ = "No Match";
                     state_.error = event.message.empty()
                         ? "This party media could not be matched in your Plex library."
@@ -388,15 +389,18 @@ namespace wxl_ui
                     continue;
                 }
 
-                if (pendingQueueAdvance_)
+                if (pendingQueueIndex_ >= 0)
                 {
-                    pendingQueueAdvance_ = false;
+                    const int resolvedIndex = pendingQueueIndex_;
+                    pendingQueueIndex_ = -1;
                     if (party_)
                     {
                         auto room = party_->Room();
-                        if (!room.queue.empty())
+                        if (ValidIndex(resolvedIndex, room.queue.size()))
                         {
-                            room.queue.erase(room.queue.begin());
+                            room.queue.erase(room.queue.begin() + resolvedIndex);
+                            for (size_t index = 0; index < room.queue.size(); ++index)
+                                room.queue[index].order = index + 1;
                             party_->SendQueue(room.queue);
                         }
                     }
@@ -877,7 +881,7 @@ namespace wxl_ui
             const auto room = party_->Room();
             if (!room.queue.empty())
             {
-                pendingQueueAdvance_ = true;
+                pendingQueueIndex_ = 0;
                 plex_->ResolvePartyMedia(selectedServer_, PlexHintFor(room.queue.front().media),
                                          room.queue.front().media.serverIdentifier);
                 status_ = "Loading the next watch-party queue item.";
@@ -1234,6 +1238,19 @@ namespace wxl_ui
                 if (party_->Role() == wxl_party::PartyRole::Host) party_->SendPermissions(permissions);
             }
             break;
+        case wxl_video_shared::UiCommand::SetPartyQueueMode:
+            if (!party_ || command.value < static_cast<LONG>(wxl_party::PartyQueueMode::HostManaged) ||
+                command.value > static_cast<LONG>(wxl_party::PartyQueueMode::EveryoneMayAdd))
+                break;
+            partySettings_.queueMode = static_cast<wxl_party::PartyQueueMode>(command.value);
+            SavePartySettings();
+            {
+                auto permissions = party_->Room().permissions;
+                permissions.queueMode = partySettings_.queueMode;
+                if (sync_) sync_->SetPermissions(permissions);
+                if (party_->Role() == wxl_party::PartyRole::Host) party_->SendPermissions(permissions);
+            }
+            break;
         case wxl_video_shared::UiCommand::SetPartySyncAudio:
         case wxl_video_shared::UiCommand::SetPartySyncSubtitles:
             if (!party_) break;
@@ -1269,13 +1286,22 @@ namespace wxl_ui
         case wxl_video_shared::UiCommand::AddCurrentToQueue:
             if (party_ && partySettings_.features.sharedQueue)
             {
+                auto room = party_->Room();
+                const auto role = party_->Role();
+                const bool mayAdd = role == wxl_party::PartyRole::Host ||
+                    (role == wxl_party::PartyRole::Guest &&
+                     room.permissions.queueMode == wxl_party::PartyQueueMode::EveryoneMayAdd);
+                if (room.code.empty() || !mayAdd)
+                {
+                    state_.error = "Only the host may add to this watch-party queue.";
+                    break;
+                }
                 const auto& source = state_.item.ratingKey.empty() ? playingItem_ : state_.item;
                 if (source.ratingKey.empty())
                 {
                     state_.error = "Select an item before adding it to the party queue.";
                     break;
                 }
-                auto room = party_->Room();
                 wxl_party::PartyQueueItem item;
                 item.media = MediaIdentityFor(selectedServer_, source);
                 item.addedBy = room.memberId;
@@ -1286,7 +1312,7 @@ namespace wxl_ui
             }
             break;
         case wxl_video_shared::UiCommand::RemoveQueueItem:
-            if (party_)
+            if (party_ && party_->Role() == wxl_party::PartyRole::Host)
             {
                 auto room = party_->Room();
                 if (!ValidIndex(command.index, room.queue.size())) break;
@@ -1295,7 +1321,7 @@ namespace wxl_ui
             }
             break;
         case wxl_video_shared::UiCommand::MoveQueueItem:
-            if (party_)
+            if (party_ && party_->Role() == wxl_party::PartyRole::Host)
             {
                 auto room = party_->Room();
                 if (!ValidIndex(command.index, room.queue.size()) ||
@@ -1308,11 +1334,12 @@ namespace wxl_ui
             }
             break;
         case wxl_video_shared::UiCommand::PlayQueueItem:
-            if (party_ && CanControlParty("queue"))
+            if (party_)
             {
                 const auto room = party_->Room();
                 if (!ValidIndex(command.index, room.queue.size())) break;
-                pendingQueueAdvance_ = true;
+                if (!CanControlParty("queue:" + std::to_string(command.index))) break;
+                pendingQueueIndex_ = command.index;
                 plex_->ResolvePartyMedia(selectedServer_,
                     PlexHintFor(room.queue[static_cast<size_t>(command.index)].media),
                     room.queue[static_cast<size_t>(command.index)].media.serverIdentifier);
@@ -1349,6 +1376,30 @@ namespace wxl_ui
                             player_->Seek(target / 1000.0);
                             lastPositionSeconds_ = target / 1000.0;
                             BroadcastPlayback(wxl_party::PartyMessageType::Seek);
+                        }
+                        catch (...) {}
+                    }
+                    else if (pendingControlRequest_ == "next" && !nextEpisode_.ratingKey.empty())
+                    {
+                        autoplayDeadline_ = 0;
+                        const auto next = nextEpisode_;
+                        nextEpisode_ = {};
+                        StartPlayback(next, true);
+                    }
+                    else if (pendingControlRequest_.rfind("queue:", 0) == 0)
+                    {
+                        try
+                        {
+                            const int queueIndex = std::stoi(pendingControlRequest_.substr(6));
+                            const auto room = party_->Room();
+                            if (ValidIndex(queueIndex, room.queue.size()))
+                            {
+                                pendingQueueIndex_ = queueIndex;
+                                plex_->ResolvePartyMedia(
+                                    selectedServer_,
+                                    PlexHintFor(room.queue[static_cast<size_t>(queueIndex)].media),
+                                    room.queue[static_cast<size_t>(queueIndex)].media.serverIdentifier);
+                            }
                         }
                         catch (...) {}
                     }
@@ -1535,11 +1586,22 @@ namespace wxl_ui
         if (party_)
         {
             const auto room = party_->Room();
+            auto permissions = room.permissions;
+            if (room.code.empty())
+            {
+                permissions.mode = partySettings_.permissionMode;
+                permissions.syncAudio = partySettings_.syncAudio;
+                permissions.syncSubtitles = partySettings_.syncSubtitles;
+                permissions.queueMode = partySettings_.queueMode;
+            }
             snapshot.partyConnectionState = static_cast<uint32_t>(party_->ConnectionState());
             snapshot.partyRole = static_cast<uint32_t>(party_->Role());
-            snapshot.partyPermissionMode = static_cast<uint32_t>(room.permissions.mode);
-            snapshot.partySyncAudio = room.permissions.syncAudio ? 1u : 0u;
-            snapshot.partySyncSubtitles = room.permissions.syncSubtitles ? 1u : 0u;
+            snapshot.partyPermissionMode = static_cast<uint32_t>(permissions.mode);
+            snapshot.partyQueueMode = static_cast<uint32_t>(permissions.queueMode);
+            snapshot.partySyncAudio = permissions.syncAudio ? 1u : 0u;
+            snapshot.partySyncSubtitles = permissions.syncSubtitles ? 1u : 0u;
+            snapshot.partyDisconnectPolicy = static_cast<uint32_t>(partySettings_.disconnectPolicy);
+            snapshot.partyPublicRoomsEnabled = partySettings_.features.publicRooms ? 1u : 0u;
             snapshot.partyReadyCheckActive = room.readyCheckActive ? 1u : 0u;
             snapshot.partyReadyStartAtMs = room.readyStartAtMs;
             snapshot.partyRelayRttMs = party_->RelayRttMs();
@@ -1896,9 +1958,10 @@ namespace wxl_ui
             ImGui::PushID(static_cast<int>(index));
             ImGui::Text("%zu. %s", index + 1, room.queue[index].media.title.c_str());
             ImGui::SameLine();
-            if (ImGui::Button("Play") && CanControlParty("queue"))
+            if (ImGui::Button("Play") &&
+                CanControlParty("queue:" + std::to_string(index)))
             {
-                pendingQueueAdvance_ = true;
+                pendingQueueIndex_ = static_cast<int>(index);
                 plex_->ResolvePartyMedia(selectedServer_, PlexHintFor(room.queue[index].media),
                                          room.queue[index].media.serverIdentifier);
             }

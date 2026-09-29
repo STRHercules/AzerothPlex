@@ -134,7 +134,7 @@ namespace wxl_ui
         bool stopped_ = true;
         bool applyingRemote_ = false;
         bool pendingRemoteMedia_ = false;
-        bool pendingQueueAdvance_ = false;
+        int pendingQueueIndex_ = -1;
         bool pausedForDisconnect_ = false;
         bool readyCountdownTriggered_ = false;
         bool browsingHome_ = false;

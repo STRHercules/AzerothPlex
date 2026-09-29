@@ -67,7 +67,7 @@ namespace wxl_video_shared
 
     constexpr wchar_t kUiMappingName[] = L"Local\\WXLVideoCinemaUi-v1";
     constexpr uint32_t kUiMagic = 0x55565857u; // "WXVU"
-    constexpr uint32_t kUiVersion = 2;
+    constexpr uint32_t kUiVersion = 3;
     constexpr size_t kUiTextBytes = 256;
     constexpr size_t kUiErrorBytes = 192;
     constexpr size_t kUiStatusBytes = 192;
@@ -129,6 +129,7 @@ namespace wxl_video_shared
         RefreshPublicRooms,
         JoinPublicRoom,
         SetPartyPermissionMode,
+        SetPartyQueueMode,
         SetPartySyncAudio,
         SetPartySyncSubtitles,
         StartReadyCheck,
@@ -262,8 +263,11 @@ namespace wxl_video_shared
         uint32_t partyConnectionState = 0;
         uint32_t partyRole = 0;
         uint32_t partyPermissionMode = 0;
+        uint32_t partyQueueMode = 0;
         uint32_t partySyncAudio = 0;
         uint32_t partySyncSubtitles = 0;
+        uint32_t partyDisconnectPolicy = 0;
+        uint32_t partyPublicRoomsEnabled = 0;
         uint32_t partyReadyCheckActive = 0;
         uint32_t partyReconnectCount = 0;
         uint32_t nextEpisodeAvailable = 0;
