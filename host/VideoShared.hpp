@@ -67,7 +67,7 @@ namespace wxl_video_shared
 
     constexpr wchar_t kUiMappingName[] = L"Local\\WXLVideoCinemaUi-v1";
     constexpr uint32_t kUiMagic = 0x55565857u; // "WXVU"
-    constexpr uint32_t kUiVersion = 3;
+    constexpr uint32_t kUiVersion = 5;
     constexpr size_t kUiTextBytes = 256;
     constexpr size_t kUiErrorBytes = 192;
     constexpr size_t kUiStatusBytes = 192;
@@ -141,6 +141,10 @@ namespace wxl_video_shared
         RespondControlRequest,
         SetDisconnectPolicy,
         ShareCinemaSettings,
+        GoLive,
+        StopLive,
+        WatchLive,
+        StopWatchingLive,
     };
 
     struct UiServerSnapshot
@@ -270,6 +274,15 @@ namespace wxl_video_shared
         uint32_t partyPublicRoomsEnabled = 0;
         uint32_t partyReadyCheckActive = 0;
         uint32_t partyReconnectCount = 0;
+        uint32_t partyLiveActive = 0;
+        uint32_t partyLiveBroadcasting = 0;
+        uint32_t partyLiveWatching = 0;
+        uint32_t partyLiveViewerCount = 0;
+        uint32_t partyLiveFramesSent = 0;
+        uint32_t partyLiveFramesReceived = 0;
+        uint32_t partyLiveFpsPermille = 0;
+        uint32_t partyLiveAudioActive = 0;
+        uint32_t partyLiveAudioFramesReceived = 0;
         uint32_t nextEpisodeAvailable = 0;
         uint32_t autoplayRemainingMs = 0;
         uint32_t playbackSpeedPermille = 1000;

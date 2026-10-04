@@ -2089,6 +2089,49 @@ namespace wxl_video_screen
             api_->UiText(memberLine);
         }
 
+        api_->UiSeparator();
+        api_->UiText("Live broadcast");
+        if (uiState_.partyLiveActive)
+        {
+            char liveLine[192]{};
+            std::snprintf(liveLine, sizeof(liveLine), "Live now | %u viewer%s | %u fps%s",
+                          uiState_.partyLiveViewerCount,
+                          uiState_.partyLiveViewerCount == 1 ? "" : "s",
+                          uiState_.partyLiveFpsPermille / 1000,
+                          uiState_.partyLiveAudioActive ? " | audio" : "");
+            api_->UiText(liveLine);
+            if (uiState_.partyLiveWatching)
+            {
+                if (api_->UiButton("Leave live broadcast"))
+                    SendUiCommand(wxl_video_shared::UiCommand::StopWatchingLive);
+            }
+            else if (api_->UiButton("Watch live"))
+            {
+                SendUiCommand(wxl_video_shared::UiCommand::WatchLive);
+            }
+            if (uiState_.partyLiveBroadcasting)
+            {
+                api_->UiSameLine();
+                if (api_->UiButton("Stop broadcasting"))
+                    SendUiCommand(wxl_video_shared::UiCommand::StopLive);
+            }
+            if (uiState_.partyLiveWatching &&
+                (uiState_.partyLiveFramesReceived || uiState_.partyLiveAudioFramesReceived))
+            {
+                char received[160]{};
+                std::snprintf(received, sizeof(received), "Received %u video / %u audio frames",
+                              uiState_.partyLiveFramesReceived,
+                              uiState_.partyLiveAudioFramesReceived);
+                api_->UiText(received);
+            }
+        }
+        else if (uiState_.partyRole == 1)
+        {
+            api_->UiText("Broadcast your player screen to room members. Viewers do not need Plex.");
+            if (api_->UiButton("Go live"))
+                SendUiCommand(wxl_video_shared::UiCommand::GoLive);
+        }
+
         if (uiState_.partyRole == 1)
         {
             if (api_->UiButton("Start ready check"))

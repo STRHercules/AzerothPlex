@@ -169,6 +169,13 @@ namespace wxl_party
         case PartyMessageType::ScreenPreset: return "screen_preset";
         case PartyMessageType::PublicRoomsRequest: return "public_rooms_request";
         case PartyMessageType::PublicRooms: return "public_rooms";
+        case PartyMessageType::LiveStart: return "live_start";
+        case PartyMessageType::LiveStop: return "live_stop";
+        case PartyMessageType::LiveWatch: return "live_watch";
+        case PartyMessageType::LiveUnwatch: return "live_unwatch";
+        case PartyMessageType::LiveStarted: return "live_started";
+        case PartyMessageType::LiveStopped: return "live_stopped";
+        case PartyMessageType::LiveState: return "live_state";
         case PartyMessageType::Unknown: break;
         }
         return "unknown";
@@ -187,6 +194,9 @@ namespace wxl_party
             PartyMessageType::Permissions, PartyMessageType::QueueUpdate, PartyMessageType::ReadyCheck,
             PartyMessageType::ReadyState, PartyMessageType::ScreenPreset,
             PartyMessageType::PublicRoomsRequest, PartyMessageType::PublicRooms,
+            PartyMessageType::LiveStart, PartyMessageType::LiveStop, PartyMessageType::LiveWatch,
+            PartyMessageType::LiveUnwatch, PartyMessageType::LiveStarted, PartyMessageType::LiveStopped,
+            PartyMessageType::LiveState,
         };
         for (const auto type : values)
             if (value == ToString(type)) return type;

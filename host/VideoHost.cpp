@@ -1,8 +1,10 @@
-// Native Plex helper used by wxl-azeroth-plex.
+﻿// Native Plex helper used by wxl-azeroth-plex.
 // Copyright (C) 2026 WarcraftXL contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "FramePublisher.hpp"
+#include "LiveAudio.hpp"
+#include "LiveCodec.hpp"
 #include "MpvPlayer.hpp"
 #include "NativeUi.hpp"
 #include "PartyClient.hpp"
@@ -57,6 +59,28 @@ namespace
     std::unique_ptr<wxl_party::PartyClient> g_party;
     wxl_party::SyncController g_sync;
     wxl_ui::NativeUi g_ui;
+    wxl_live::LiveEncoder g_liveEncoder;
+    wxl_live::LiveDecoder g_liveDecoder;
+    wxl_live::LiveAudioCapture g_liveAudioCapture;
+    wxl_live::LiveAudioEncoder g_liveAudioEncoder;
+    wxl_live::LiveAudioDecoder g_liveAudioDecoder;
+    wxl_live::LiveAudioOutput g_liveAudioOutput;
+    uint64_t g_liveFramesSent = 0;
+    uint64_t g_liveFramesReceived = 0;
+    uint64_t g_liveAudioFramesSent = 0;
+    uint64_t g_liveAudioFramesReceived = 0;
+    uint32_t g_liveFpsPermille = 0;
+    uint64_t g_liveFpsLastCount = 0;
+    ULONGLONG g_liveFpsAt = 0;
+    ULONGLONG g_liveDecoderRetryAt = 0;
+    ULONGLONG g_lastLiveEncodeAt = 0;
+    ULONGLONG g_liveAudioRetryAt = 0;
+    uint32_t g_liveAudioSequence = 0;
+    bool g_liveAudioActive = false;
+
+    constexpr uint32_t kLiveEncodeFps = 30;
+    constexpr uint32_t kLiveEncodeBitrate = 1200 * 1000;
+    constexpr uint32_t kLiveKeyframeInterval = kLiveEncodeFps * 2;
 
     DWORD ParseParentPid(const wchar_t* commandLine)
     {
@@ -244,6 +268,7 @@ namespace
             if (control->volumeSequence == volumeSequence)
             {
                 g_player.SetVolume(static_cast<int>(volume));
+                g_liveAudioOutput.SetVolumePercent(static_cast<int>(volume));
                 g_lastVolumeSequence = volumeSequence;
             }
         }
@@ -308,12 +333,166 @@ namespace
         g_ui.PumpPlexEvents();
         g_ui.PumpPartyEvents();
         ProcessUiCommand();
+
+        const bool broadcastingLive = g_ui.LiveBroadcasting();
+        const bool watchingLive = g_ui.LiveWatching();
+
+        if (watchingLive)
+        {
+            if (!g_liveDecoder.IsInitialized() && GetTickCount64() - g_liveDecoderRetryAt >= 1000)
+            {
+                g_liveDecoderRetryAt = GetTickCount64();
+                g_liveDecoder.Initialize();
+            }
+            std::vector<uint8_t> packet;
+            int drained = 0;
+            while (drained < 8 && g_party->PopBinaryFrame(packet))
+            {
+                ++drained;
+                wxl_live::FrameHeader header{};
+                if (!wxl_live::ReadFrameHeader(packet, header)) continue;
+                std::span<const uint8_t> payload(packet.data() + wxl_live::kFrameHeaderBytes,
+                                                 packet.size() - wxl_live::kFrameHeaderBytes);
+                if ((header.flags & wxl_live::kFrameFlagAudio) != 0)
+                {
+                    if (!g_liveAudioDecoder.IsInitialized())
+                        g_liveAudioDecoder.Initialize(wxl_live::kLiveAudioSampleRate, wxl_live::kLiveAudioChannels);
+                    if (!g_liveAudioOutput.IsRunning() && g_liveAudioDecoder.IsInitialized())
+                        g_liveAudioOutput.Start(wxl_live::kLiveAudioSampleRate, wxl_live::kLiveAudioChannels);
+                    std::vector<uint8_t> pcm;
+                    if (g_liveAudioDecoder.IsInitialized() &&
+                        g_liveAudioDecoder.Decode(payload, pcm) && !pcm.empty())
+                    {
+                        if (g_liveAudioOutput.IsRunning())
+                            g_liveAudioOutput.Submit(pcm.data(), pcm.size());
+                        ++g_liveAudioFramesReceived;
+                        g_liveAudioActive = true;
+                    }
+                    continue;
+                }
+                if (!g_liveDecoder.IsInitialized()) continue;
+                std::vector<uint8_t> frame;
+                uint32_t width = 0;
+                uint32_t height = 0;
+                if (!g_liveDecoder.Decode(payload, header.sequence, frame, width, height))
+                    continue;
+                if (width != wxl_video_shared::kWidth || height != wxl_video_shared::kHeight)
+                    continue;
+                g_frames.Publish(frame, wxl_video_shared::kStride);
+                g_ui.SetFrame(frame.data(), wxl_video_shared::kStride);
+                ++g_liveFramesReceived;
+            }
+        }
+        else
+        {
+            if (g_liveDecoder.IsInitialized() || g_liveAudioDecoder.IsInitialized() ||
+                g_liveAudioOutput.IsRunning())
+            {
+                g_liveDecoder.Shutdown();
+                g_liveAudioDecoder.Shutdown();
+                g_liveAudioOutput.Stop();
+                std::vector<uint8_t> stale;
+                while (g_party->PopBinaryFrame(stale)) {}
+            }
+            g_liveFramesReceived = 0;
+            g_liveAudioFramesReceived = 0;
+            g_liveAudioActive = false;
+        }
+
         g_player.Render();
-        if (g_player.CopyFrameTo(g_frame.data(), wxl_video_shared::kStride))
+        if (!watchingLive && g_player.CopyFrameTo(g_frame.data(), wxl_video_shared::kStride))
         {
             g_frames.Publish(g_frame, wxl_video_shared::kStride);
             g_ui.SetFrame(g_frame.data(), wxl_video_shared::kStride);
+
+            if (broadcastingLive)
+            {
+                if (!g_liveEncoder.IsInitialized())
+                {
+                    g_liveEncoder.Initialize(wxl_video_shared::kWidth, wxl_video_shared::kHeight,
+                                             kLiveEncodeFps, kLiveEncodeBitrate,
+                                             kLiveKeyframeInterval);
+                }
+                const ULONGLONG now = GetTickCount64();
+                if (g_liveEncoder.IsInitialized() && now - g_lastLiveEncodeAt >= 1000 / kLiveEncodeFps)
+                {
+                    g_lastLiveEncodeAt = now;
+                    std::vector<uint8_t> accessUnit;
+                    uint32_t sequence = 0;
+                    bool keyframe = false;
+                    if (g_liveEncoder.Encode(g_frame.data(), wxl_video_shared::kStride,
+                                             accessUnit, sequence, keyframe) && !accessUnit.empty())
+                    {
+                        wxl_live::WriteFrameHeader(accessUnit, keyframe, sequence);
+                        g_party->SendBinaryFrame(accessUnit);
+                        ++g_liveFramesSent;
+                    }
+                }
+
+                if (!g_liveAudioCapture.IsRunning() &&
+                    GetTickCount64() - g_liveAudioRetryAt >= 2000)
+                {
+                    g_liveAudioRetryAt = GetTickCount64();
+                    g_liveAudioCapture.Start(GetCurrentProcessId());
+                    if (g_liveAudioCapture.IsRunning() && !g_liveAudioEncoder.IsInitialized())
+                        g_liveAudioEncoder.Initialize(wxl_live::kLiveAudioSampleRate,
+                                                      wxl_live::kLiveAudioChannels,
+                                                      wxl_live::kLiveAudioBitrate);
+                }
+                g_liveAudioActive = g_liveAudioCapture.IsRunning() &&
+                                    g_liveAudioEncoder.IsInitialized();
+                if (g_liveAudioActive)
+                {
+                    std::vector<uint8_t> captured(
+                        size_t(wxl_live::kLiveAudioChunkFrames) * wxl_live::kLiveAudioChannels * 2);
+                    const size_t got = g_liveAudioCapture.Read(captured.data(), captured.size());
+                    if (got > 0)
+                    {
+                        std::vector<uint8_t> encoded;
+                        if (g_liveAudioEncoder.Encode(captured.data(),
+                                                      static_cast<uint32_t>(got), encoded) &&
+                            !encoded.empty())
+                        {
+                            wxl_live::WriteFrameHeader(encoded, false, ++g_liveAudioSequence, true);
+                            g_party->SendBinaryFrame(encoded);
+                            ++g_liveAudioFramesSent;
+                        }
+                    }
+                }
+            }
         }
+        if (!broadcastingLive && g_liveEncoder.IsInitialized())
+        {
+            g_liveEncoder.Shutdown();
+            g_liveFramesSent = 0;
+            g_lastLiveEncodeAt = 0;
+        }
+        if (!broadcastingLive)
+        {
+            if (g_liveAudioCapture.IsRunning()) g_liveAudioCapture.Stop();
+            if (g_liveAudioEncoder.IsInitialized()) g_liveAudioEncoder.Shutdown();
+            g_liveAudioFramesSent = 0;
+            g_liveAudioActive = false;
+        }
+        if (!broadcastingLive && !watchingLive)
+            g_liveFramesSent = 0;
+
+        const ULONGLONG statsNow = GetTickCount64();
+        if (statsNow - g_liveFpsAt >= 1000)
+        {
+            const uint64_t frames = broadcastingLive ? g_liveFramesSent
+                                   : watchingLive ? g_liveFramesReceived : 0;
+            const uint64_t delta = frames >= g_liveFpsLastCount ? frames - g_liveFpsLastCount : 0;
+            g_liveFpsPermille = static_cast<uint32_t>(std::min<uint64_t>(delta, 999) * 1000);
+            g_liveFpsLastCount = frames;
+            g_liveFpsAt = statsNow;
+        }
+        g_ui.SetLiveStats(static_cast<uint32_t>(std::min<uint64_t>(g_liveFramesSent, UINT32_MAX)),
+                          static_cast<uint32_t>(std::min<uint64_t>(g_liveFramesReceived, UINT32_MAX)),
+                          g_liveFpsPermille, g_liveAudioActive,
+                          static_cast<uint32_t>(std::min<uint64_t>(g_liveAudioFramesReceived,
+                                                                   UINT32_MAX)));
+
         PublishUiState();
 
         if (!g_ui.IsVisible() || !g_renderTarget) return;
@@ -354,6 +533,7 @@ namespace
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+    wxl_live::StartupMediaFoundation();
     const DWORD parentPid = ParseParentPid(commandLine);
     if (parentPid) g_parentProcess = OpenProcess(SYNCHRONIZE, FALSE, parentPid);
 
@@ -364,6 +544,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
     {
+        wxl_live::ShutdownMediaFoundation();
         CoUninitialize();
         return 2;
     }
@@ -377,6 +558,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         if (g_window) DestroyWindow(g_window);
         ShutdownUiBridge();
         ShutdownControl();
+        wxl_live::ShutdownMediaFoundation();
         CoUninitialize();
         return 3;
     }
@@ -400,6 +582,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         DestroyWindow(g_window);
         ShutdownUiBridge();
         ShutdownControl();
+        wxl_live::ShutdownMediaFoundation();
         CoUninitialize();
         return 4;
     }
@@ -417,6 +600,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
     }
 
     if (g_party) g_party->Disconnect();
+    g_liveAudioCapture.Stop();
+    g_liveAudioEncoder.Shutdown();
+    g_liveAudioDecoder.Shutdown();
+    g_liveAudioOutput.Stop();
+    g_liveEncoder.Shutdown();
+    g_liveDecoder.Shutdown();
+    wxl_live::ShutdownMediaFoundation();
     g_ui.Shutdown();
     g_player.Shutdown();
     g_party.reset();
@@ -433,3 +623,4 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }
+

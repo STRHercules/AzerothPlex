@@ -10,8 +10,14 @@ from . import PROTOCOL_VERSION
 ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 MAX_MEMBERS = 32
 MAX_QUEUE = 64
+MAX_LIVE_FRAME_BYTES = 512 * 1024
+LIVE_FRAME_FLAG_AUDIO = 0x02
 ROOM_IDLE_SECONDS = 60 * 30
 DISCONNECT_GRACE_SECONDS = 30
+
+
+def is_live_audio_frame(data: bytes) -> bool:
+    return len(data) > 5 and (data[5] & LIVE_FRAME_FLAG_AUDIO) != 0
 
 
 def now_ms() -> int:
@@ -77,6 +83,8 @@ class Room:
     cinema: dict[str, Any] = field(default_factory=dict)
     ready_active: bool = False
     ready_start_at_ms: int = 0
+    live_id: str = ""
+    live_watchers: set[str] = field(default_factory=set)
     members: dict[str, Member] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.monotonic)
 
@@ -104,7 +112,8 @@ class Room:
 @dataclass
 class Delivery:
     recipients: list[str]
-    message: dict[str, Any]
+    message: dict[str, Any] | None = None
+    binary: bytes | None = None
 
 
 class RelayState:
@@ -137,6 +146,14 @@ class RelayState:
             "payload": payload or {},
         }
 
+    @staticmethod
+    def _live_payload(room: Room) -> dict[str, Any]:
+        return {
+            "active": bool(room.live_id),
+            "broadcasterId": room.live_id,
+            "watcherCount": len(room.live_watchers),
+        }
+
     def _room_payload(self, room: Room) -> dict[str, Any]:
         return {
             "visibility": room.visibility,
@@ -147,6 +164,7 @@ class RelayState:
             "cinema": room.cinema,
             "readyCheckActive": room.ready_active,
             "readyStartAtMs": room.ready_start_at_ms,
+            "live": self._live_payload(room),
         }
 
     def _error(self, client_id: str, text: str, room: Room | None = None) -> Delivery:
@@ -239,6 +257,33 @@ class RelayState:
         )
         return [Delivery([client_id], joined), self._broadcast(room, member_update, exclude=[client_id])]
 
+    def _stop_live(self, room: Room, broadcaster_id: str) -> list[Delivery]:
+        if not broadcaster_id or room.live_id != broadcaster_id:
+            return []
+        room.live_id = ""
+        room.live_watchers.clear()
+        room.next_sequence()
+        event = self._envelope(
+            "live_stopped", room=room,
+            payload={"live": self._live_payload(room), "members": room.member_list()},
+        )
+        return [self._broadcast(room, event)]
+
+    def live_frame(self, client_id: str, data: bytes) -> list[Delivery]:
+        code = self.client_room.get(client_id, "")
+        room = self.rooms.get(code)
+        if room is None or room.live_id != client_id:
+            return [self._error(client_id, "Only the active broadcaster may send live frames.")]
+        room.updated_at = time.monotonic()
+        recipients = [
+            member_id for member_id in room.live_watchers
+            if member_id != client_id and member_id in room.members
+            and room.members[member_id].connected
+        ]
+        if not recipients:
+            return []
+        return [Delivery(recipients, binary=data)]
+
     def leave(self, client_id: str, *, explicit: bool) -> list[Delivery]:
         code = self.client_room.pop(client_id, "")
         room = self.rooms.get(code)
@@ -256,12 +301,14 @@ class RelayState:
                 payload={"members": room.member_list()},
             )
             self.client_room[client_id] = code
-            return [self._broadcast(room, update, exclude=[client_id])]
+            deliveries = self._stop_live(room, client_id)
+            deliveries.append(self._broadcast(room, update, exclude=[client_id]))
+            return deliveries
 
         del room.members[client_id]
         self._update_ready_countdown(room)
         room.next_sequence()
-        deliveries: list[Delivery] = []
+        deliveries: list[Delivery] = self._stop_live(room, client_id)
         if not room.members:
             del self.rooms[code]
             return deliveries
@@ -298,6 +345,7 @@ class RelayState:
                 self.client_room.pop(client_id, None)
                 room.members.pop(client_id, None)
                 self._update_ready_countdown(room)
+                deliveries.extend(self._stop_live(room, client_id))
                 if room.host_id == client_id and room.members:
                     self._migrate_host(room)
                     deliveries.append(self._broadcast(
@@ -485,6 +533,45 @@ class RelayState:
             room.cinema = dict(cinema)
             room.next_sequence()
             event = self._envelope("screen_preset", room=room, payload={"cinema": room.cinema})
+            return [self._broadcast(room, event)]
+
+        if message_type == "live_start":
+            if not is_host:
+                return [self._error(client_id, "Only the watch-party host can start a live broadcast.", room)]
+            if room.live_id:
+                return [self._error(client_id, "A live broadcast is already active in this room.", room)]
+            room.live_id = client_id
+            room.live_watchers = set()
+            room.next_sequence()
+            event = self._envelope(
+                "live_started", room=room, member_id=client_id,
+                payload={"live": self._live_payload(room), "members": room.member_list()},
+            )
+            return [self._broadcast(room, event)]
+
+        if message_type == "live_stop":
+            if client_id != room.live_id and not is_host:
+                return [self._error(client_id, "Only the broadcaster or host can stop the live broadcast.", room)]
+            return self._stop_live(room, room.live_id)
+
+        if message_type == "live_watch":
+            if not room.live_id:
+                return [self._error(client_id, "No live broadcast is active in this room.", room)]
+            room.live_watchers.add(client_id)
+            room.next_sequence()
+            event = self._envelope(
+                "live_state", room=room, member_id=client_id,
+                payload={"live": self._live_payload(room)},
+            )
+            return [self._broadcast(room, event)]
+
+        if message_type == "live_unwatch":
+            room.live_watchers.discard(client_id)
+            room.next_sequence()
+            event = self._envelope(
+                "live_state", room=room, member_id=client_id,
+                payload={"live": self._live_payload(room)},
+            )
             return [self._broadcast(room, event)]
 
         return [self._error(client_id, "Unsupported party message type.", room)]

@@ -1,6 +1,16 @@
 # AzerothPlex Relay
 
-The relay is the state-only service used by AzerothPlex Watch Together. It never receives Plex credentials, authenticated media URLs, decoded frames, or media files.
+The relay serves AzerothPlex Watch Together. Playback synchronization remains
+state-only: the relay never receives Plex credentials or authenticated media
+URLs.
+
+Live Broadcast is an explicit opt-in exception: when a room host starts a live
+broadcast, the relay blindly forwards the host's encoded video and audio frames
+as binary WebSocket messages to room members who pressed **Watch Live**. Frames
+are held in memory only, never written to disk. A slow viewer skips video
+frames instead of buffering latency, while audio keeps a short bounded backlog
+so it is not dropped per-frame. Viewers do not need a Plex account or Plex
+access for the broadcast media.
 
 ## Development
 

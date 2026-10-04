@@ -95,6 +95,21 @@ int main()
     CHECK(parsed.permissions.mode == PartyPermissionMode::HostOnly);
     CHECK(parsed.permissions.queueMode == PartyQueueMode::EveryoneMayAdd);
 
+    PartyWireMessage liveMessage;
+    liveMessage.type = PartyMessageType::LiveStarted;
+    liveMessage.roomCode = "AZ-7K3F";
+    liveMessage.senderId = "client-a";
+    liveMessage.live.active = true;
+    liveMessage.live.broadcasterId = "client-a";
+    liveMessage.live.watcherCount = 2;
+    CHECK(ParsePartyMessage(SerializePartyMessage(liveMessage), parsed, error));
+    CHECK(parsed.type == PartyMessageType::LiveStarted);
+    CHECK(parsed.live.active);
+    CHECK(parsed.live.broadcasterId == "client-a");
+    CHECK(parsed.live.watcherCount == 2);
+    CHECK(PartyMessageTypeFromString("live_watch") == PartyMessageType::LiveWatch);
+    CHECK(PartyMessageTypeFromString("live_stopped") == PartyMessageType::LiveStopped);
+
     PartyWireMessage readyMessage;
     readyMessage.type = PartyMessageType::ReadyCheck;
     readyMessage.roomCode = "AZ-7K3F";

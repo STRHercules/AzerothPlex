@@ -9,6 +9,7 @@ namespace wxl_party
 {
     constexpr int kPartyProtocolVersion = 1;
     constexpr size_t kMaxPartyMessageBytes = 64 * 1024;
+    constexpr size_t kMaxPartyFrameBytes = 512 * 1024;
     constexpr size_t kMaxPartyMembers = 32;
     constexpr size_t kMaxPartyQueueItems = 64;
     constexpr int64_t kNoCorrectionDriftMs = 250;
@@ -106,6 +107,21 @@ namespace wxl_party
         ScreenPreset,
         PublicRoomsRequest,
         PublicRooms,
+        LiveStart,
+        LiveStop,
+        LiveWatch,
+        LiveUnwatch,
+        LiveStarted,
+        LiveStopped,
+        LiveState,
+    };
+
+    struct LiveState
+    {
+        bool active = false;
+        bool watching = false;
+        std::string broadcasterId;
+        uint32_t watcherCount = 0;
     };
 
     struct MediaIdentity
@@ -219,6 +235,7 @@ namespace wxl_party
         bool readyCheckActive = false;
         int64_t readyStartAtMs = 0;
         CinemaSettings cinema;
+        LiveState live;
     };
 
     struct PartyWireMessage
@@ -244,6 +261,7 @@ namespace wxl_party
         PartyPermissions permissions;
         PartyPlaybackState playback;
         CinemaSettings cinema;
+        LiveState live;
         std::vector<PartyMember> members;
         std::vector<PartyQueueItem> queue;
         std::vector<PublicRoom> publicRooms;
@@ -258,6 +276,9 @@ namespace wxl_party
         // Public discovery stays opt-in until relay authentication/moderation requirements are met.
         bool publicRooms = false;
         bool ambientLighting = true;
+        // Live broadcast shares encoded frames through the relay; keep it visible as a flag
+        // so builds can disable it independently of Watch Together.
+        bool liveBroadcast = true;
     };
 
     MediaMatchQuality MatchMediaIdentity(const MediaIdentity& local, const MediaIdentity& remote);

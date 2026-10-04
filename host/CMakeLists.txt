@@ -20,6 +20,7 @@ set(IMGUI_SOURCES
 add_executable(wxl-video-host WIN32
     VideoHost.cpp FramePublisher.cpp MpvPlayer.cpp PlexClient.cpp TokenStore.cpp NativeUi.cpp
     PartyTypes.cpp PartyProtocol.cpp SyncController.cpp SessionStore.cpp PartyClient.cpp
+    LiveCodec.cpp LiveAudio.cpp
     ${IMGUI_SOURCES})
 target_include_directories(wxl-video-host PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
@@ -29,7 +30,8 @@ target_include_directories(wxl-video-host PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/third_party/imgui/backends")
 target_compile_definitions(wxl-video-host PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(wxl-video-host PRIVATE
-    d3d11 dxgi d3dcompiler user32 gdi32 winhttp crypt32 shell32 ole32 oleaut32)
+    d3d11 dxgi d3dcompiler user32 gdi32 winhttp crypt32 shell32 ole32 oleaut32
+    mfplat mfuuid wmcodecdspuuid mmdevapi)
 if(MPV_ROOT AND EXISTS "${MPV_ROOT}/libmpv-2.dll")
     add_custom_command(TARGET wxl-video-host POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -89,6 +91,18 @@ target_compile_definitions(ui_bridge_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX 
 target_link_libraries(ui_bridge_tests PRIVATE user32)
 add_test(NAME ui_bridge_tests COMMAND ui_bridge_tests)
 
+add_executable(live_codec_tests tests/LiveCodecTests.cpp LiveCodec.cpp)
+target_include_directories(live_codec_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(live_codec_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(live_codec_tests PRIVATE mfplat mfuuid wmcodecdspuuid ole32)
+add_test(NAME live_codec_tests COMMAND live_codec_tests)
+
+add_executable(live_audio_tests tests/LiveAudioTests.cpp LiveAudio.cpp LiveCodec.cpp)
+target_include_directories(live_audio_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(live_audio_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(live_audio_tests PRIVATE mfplat mfuuid wmcodecdspuuid mmdevapi ole32)
+add_test(NAME live_audio_tests COMMAND live_audio_tests)
+
 add_executable(party_tests tests/PartyTests.cpp PartyTypes.cpp PartyProtocol.cpp SyncController.cpp)
 target_include_directories(party_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
@@ -102,3 +116,4 @@ target_include_directories(session_store_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/third_party")
 target_compile_definitions(session_store_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 add_test(NAME session_store_tests COMMAND session_store_tests)
+

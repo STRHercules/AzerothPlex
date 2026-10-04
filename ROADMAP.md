@@ -26,6 +26,11 @@ The central architectural rule is:
 
 Every participant continues to stream media from a Plex server available to that participant. Multiplayer features exchange only session metadata, presence, media identity, playback state, timestamps, screen configuration, and optional social events.
 
+The single approved exception is **Live Broadcast** (see section 53): an explicit
+opt-in where a room host streams the already-decoded player screen to room
+members who press **Watch live**. It never shares Plex credentials or
+authenticated media URLs, and it does not replace state synchronization.
+
 ---
 
 # 2. Goals
@@ -39,7 +44,7 @@ Every participant continues to stream media from a Plex server available to that
    - AzerothPlex native host
    - Plex authentication/playback
 4. Keep Plex credentials local to each client.
-5. Avoid sending media frames, media files, or Plex access tokens through multiplayer infrastructure.
+5. Avoid sending media frames, media files, or Plex access tokens through multiplayer infrastructure. Live Broadcast is the documented, explicit opt-in exception; Plex credentials and authenticated media URLs are still never shared.
 6. Build all new systems in incremental, testable phases.
 7. Keep the project usable in single-player mode even if multiplayer services are unavailable.
 
@@ -57,7 +62,7 @@ Every participant continues to stream media from a Plex server available to that
 
 The following are explicitly out of scope unless separately approved:
 
-- Relaying or restreaming Plex video through AzerothPlex servers.
+- Relaying or restreaming Plex video through AzerothPlex servers. Live Broadcast is the separately approved exception, limited to the encoded player-screen frames of an explicit broadcaster and gated to room members who opt in to watch.
 - Sharing Plex authentication tokens between users.
 - Sharing a Plex password.
 - Downloading media for offline playback.
@@ -1986,3 +1991,41 @@ The core differentiator is not merely "Plex inside WoW."
 It is:
 
 > **A synchronized social cinema system that happens to live inside WotLK.**
+
+---
+
+# 53. Live Broadcast v1
+
+Live Broadcast lets a room host share the player screen with room members who do
+not have access to the same Plex media and who do not want playback
+synchronization. It is opt-in on both sides: the host presses **Go live**, each
+viewer presses **Watch live**.
+
+Implemented scope:
+
+- host-only start; broadcaster or host may stop;
+- Windows Media Foundation H.264 encode (NV12, CBR, no B-frames, 2-second GOP)
+  of the existing 640x360 player frames, plus a 12-byte frame header;
+- WASAPI process-loopback capture of the host process's own audio (other system
+  sounds are excluded), Media Foundation AAC encode with ADTS framing;
+- binary WebSocket fan-out through the existing relay with a latest-frame-wins
+  policy for video and a short bounded backlog for audio, so slow viewers skip
+  video frames without corrupting the audio stream;
+- Media Foundation H.264 decode with low-latency mode and display-aperture
+  cropping back into the existing shared-memory frame path, so the extension
+  renders live frames with no changes to world-screen rendering;
+- Media Foundation AAC decode and WASAPI render with automatic sample-rate
+  conversion; the existing volume control also drives broadcast audio;
+- relay state messages `live_start`, `live_stop`, `live_watch`, `live_unwatch`
+  and events `live_started`, `live_stopped`, `live_state`;
+- room UI, viewer count, and video/audio frame diagnostics.
+
+Boundaries and known limitations for v1:
+
+- the source is the AzerothPlex player screen, not the WoW desktop;
+- 640x360 at 30 fps and 1.2 Mbps, matching the existing frame pipeline;
+- TCP WebSocket fan-out through the relay; no WebRTC/SFU and no NAT traversal;
+- relay authentication, moderation, and abuse controls are still required
+  before public-room broadcasts are production-ready;
+- a real two-client WoW validation run is required before Live Broadcast is
+  considered multiplayer-validated.

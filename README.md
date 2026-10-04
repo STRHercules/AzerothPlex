@@ -60,6 +60,20 @@ reconnect grace, disconnect policies, shared cinema layout, relay RTT/drift
 diagnostics, and a compact mini-player. The mini-player includes 10-second seek
 controls and its enabled state is saved locally.
 
+### Live Broadcast (experimental, video only)
+
+A room host can press **Go live** to broadcast the player screen and its audio
+to the room without any playback synchronization. Video is H.264-encoded, audio
+is captured with WASAPI process loopback (only AzerothPlex audio, not other
+system sounds) and AAC-encoded with Windows Media Foundation. The relay
+forwards both as binary WebSocket messages to room members who pressed
+**Watch live**, and decodes them back into the client-local world-space screen
+and the default audio device. Viewers need no Plex account or Plex access to
+the broadcast media. The newest video frame wins when a viewer falls behind,
+while audio keeps a short bounded backlog; local volume controls the broadcast
+audio too. This does not capture the WoW desktop, only the AzerothPlex player
+screen; audio broadcast is a new and experimental path and will keep improving.
+
 Public room discovery is implemented but intentionally disabled by default. The
 roadmap requires authentication plus abuse/moderation controls before public
 rooms are considered production-ready. See `relay/README.md` for the explicit
@@ -94,8 +108,11 @@ Placement is saved to
 - a Plex account with access to at least one reachable server;
 - server-side Plex transcoding may be used when direct play is unavailable.
 
-Media is played from Plex. AzerothPlex does not download, cache, locally
-transcode, or redistribute media. The world-space screen is client-local.
+Media is played from Plex. AzerothPlex does not download or cache media. The
+only exception to the state-only relay rule is the explicit **Go live** opt-in
+described above, which streams the host's already-decoded player screen to room
+members over the relay; it remains disabled for anyone who does not join the
+room and press **Watch live**. The world-space screen is client-local.
 
 For Plex `*.plex.direct` connections, login and metadata remain HTTPS, but the
 native media stream uses the server's standard HTTP port to avoid a known

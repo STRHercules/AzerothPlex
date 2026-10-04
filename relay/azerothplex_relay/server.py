@@ -13,12 +13,18 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from . import PROTOCOL_VERSION
-from .state import Delivery, RelayState
+from .state import Delivery, MAX_LIVE_FRAME_BYTES, RelayState, is_live_audio_frame
 
 LOGGER = logging.getLogger("azerothplex-relay")
 MAX_MESSAGE_BYTES = 64 * 1024
 RATE_WINDOW_SECONDS = 10.0
 RATE_LIMIT_MESSAGES = 60
+MAX_CONTROL_BACKLOG = 64
+AUDIO_BACKLOG_FRAMES = 8
+
+
+def frame_is_audio(data: bytes) -> bool:
+    return is_live_audio_frame(data)
 
 
 class RateLimiter:
@@ -35,34 +41,111 @@ class RateLimiter:
         return True
 
 
+class Outbound:
+    """Per-connection writer.
+
+    Control messages are queued in order. Live frames keep only the newest
+    pending frame so a slow viewer skips ahead instead of accumulating latency.
+    """
+
+    def __init__(self, websocket: ServerConnection) -> None:
+        self.websocket = websocket
+        self.control: deque[str] = deque(maxlen=MAX_CONTROL_BACKLOG)
+        self.frame: bytes | None = None
+        self.audio: deque[bytes] = deque(maxlen=AUDIO_BACKLOG_FRAMES)
+        self.changed = asyncio.Event()
+        self.closed = False
+        self.task = asyncio.create_task(self._run())
+
+    def send_text(self, text: str) -> None:
+        if self.closed:
+            return
+        self.control.append(text)
+        self.changed.set()
+
+    def send_frame(self, frame: bytes) -> None:
+        if self.closed:
+            return
+        if frame_is_audio(frame):
+            self.audio.append(frame)
+        else:
+            self.frame = frame
+        self.changed.set()
+
+    async def _run(self) -> None:
+        try:
+            while not self.closed:
+                await self.changed.wait()
+                self.changed.clear()
+                while self.control:
+                    await self.websocket.send(self.control.popleft())
+                while self.audio:
+                    await self.websocket.send(self.audio.popleft())
+                frame = self.frame
+                if frame is not None:
+                    self.frame = None
+                    await self.websocket.send(frame)
+        except ConnectionClosed:
+            pass
+        except asyncio.CancelledError:
+            pass
+
+    async def kick(self, code: int, reason: str) -> None:
+        self.closed = True
+        self.task.cancel()
+        try:
+            await self.websocket.close(code=code, reason=reason)
+        except ConnectionClosed:
+            pass
+
+    async def close(self) -> None:
+        self.closed = True
+        self.task.cancel()
+        try:
+            await self.task
+        except asyncio.CancelledError:
+            pass
+
+
 class RelayServer:
     def __init__(self, *, public_rooms_enabled: bool = False) -> None:
         self.state = RelayState(public_rooms_enabled=public_rooms_enabled)
-        self.connections: dict[str, ServerConnection] = {}
+        self.connections: dict[str, Outbound] = {}
 
     async def deliver(self, deliveries: list[Delivery]) -> None:
         for delivery in deliveries:
+            if delivery.binary is not None:
+                for client_id in delivery.recipients:
+                    outbound = self.connections.get(client_id)
+                    if outbound is not None:
+                        outbound.send_frame(delivery.binary)
+                continue
+            if delivery.message is None:
+                continue
             text = json.dumps(delivery.message, separators=(",", ":"))
             if len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
                 LOGGER.warning("dropping oversized outbound message type=%s", delivery.message.get("type"))
                 continue
             for client_id in delivery.recipients:
-                connection = self.connections.get(client_id)
-                if connection is None:
-                    continue
-                try:
-                    await connection.send(text)
-                except ConnectionClosed:
-                    pass
+                outbound = self.connections.get(client_id)
+                if outbound is not None:
+                    outbound.send_text(text)
 
     async def handler(self, websocket: ServerConnection) -> None:
         client_id = ""
         limiter = RateLimiter()
+        outbound = Outbound(websocket)
         try:
             async for raw in websocket:
-                if not isinstance(raw, str):
-                    await websocket.close(code=1003, reason="text messages only")
-                    return
+                if isinstance(raw, (bytes, bytearray)):
+                    if len(raw) > MAX_LIVE_FRAME_BYTES:
+                        await websocket.close(code=1009, reason="live frame too large")
+                        return
+                    if not client_id:
+                        await websocket.close(code=1008, reason="missing client id")
+                        return
+                    await self.deliver(self.state.live_frame(client_id, bytes(raw)))
+                    continue
                 if len(raw.encode("utf-8")) > MAX_MESSAGE_BYTES:
                     await websocket.close(code=1009, reason="message too large")
                     return
@@ -97,19 +180,17 @@ class RelayServer:
                 if not client_id:
                     client_id = sender
                     old = self.connections.get(client_id)
-                    self.connections[client_id] = websocket
-                    if old is not None and old is not websocket:
-                        try:
-                            await old.close(code=1000, reason="reconnected")
-                        except ConnectionClosed:
-                            pass
+                    self.connections[client_id] = outbound
+                    if old is not None and old is not outbound:
+                        await old.kick(1000, "reconnected")
                 await self.deliver(self.state.handle(client_id, message))
         except ConnectionClosed:
             pass
         finally:
-            if client_id and self.connections.get(client_id) is websocket:
+            if client_id and self.connections.get(client_id) is outbound:
                 self.connections.pop(client_id, None)
                 await self.deliver(self.state.leave(client_id, explicit=False))
+            await outbound.close()
 
     async def cleanup_loop(self) -> None:
         while True:
@@ -127,7 +208,7 @@ async def run(host: str, port: int, ssl_context: ssl.SSLContext | None,
             host,
             port,
             ssl=ssl_context,
-            max_size=MAX_MESSAGE_BYTES,
+            max_size=MAX_LIVE_FRAME_BYTES,
             compression=None,
             ping_interval=20,
             ping_timeout=20,

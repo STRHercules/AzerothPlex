@@ -220,6 +220,26 @@ namespace wxl_party
             };
         }
 
+        json LiveToJson(const LiveState& live)
+        {
+            return {
+                {"active", live.active},
+                {"broadcasterId", live.broadcasterId},
+                {"watcherCount", live.watcherCount},
+            };
+        }
+
+        LiveState LiveFromJson(const json& value)
+        {
+            LiveState live;
+            if (!value.is_object()) return live;
+            live.active = value.value("active", false);
+            live.broadcasterId = BoundedString(value, "broadcasterId", 128);
+            live.watcherCount = static_cast<uint32_t>(std::clamp<int64_t>(
+                Signed(value, "watcherCount"), 0, 128));
+            return live;
+        }
+
         CinemaSettings CinemaFromJson(const json& value)
         {
             CinemaSettings cinema;
@@ -300,6 +320,11 @@ namespace wxl_party
             message.type == PartyMessageType::RoomCreated || message.type == PartyMessageType::RoomJoined)
             payload["cinema"] = CinemaToJson(message.cinema);
 
+        if (message.type == PartyMessageType::LiveStarted || message.type == PartyMessageType::LiveStopped ||
+            message.type == PartyMessageType::LiveState || message.type == PartyMessageType::RoomState ||
+            message.type == PartyMessageType::RoomCreated || message.type == PartyMessageType::RoomJoined)
+            payload["live"] = LiveToJson(message.live);
+
         if (!message.publicRooms.empty() || message.type == PartyMessageType::PublicRooms)
         {
             payload["publicRooms"] = json::array();
@@ -368,6 +393,7 @@ namespace wxl_party
             if (payload.contains("playback")) message.playback = PlaybackFromJson(payload["playback"]);
             if (payload.contains("permissions")) message.permissions = PermissionsFromJson(payload["permissions"]);
             if (payload.contains("cinema")) message.cinema = CinemaFromJson(payload["cinema"]);
+            if (payload.contains("live")) message.live = LiveFromJson(payload["live"]);
 
             if (payload.contains("members") && payload["members"].is_array())
             {

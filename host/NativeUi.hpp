@@ -69,6 +69,11 @@ namespace wxl_ui
         bool IsVisible() const { return visible_; }
         void Shutdown();
 
+        bool LiveBroadcasting() const { return liveBroadcasting_; }
+        bool LiveWatching() const { return liveWatching_; }
+        void SetLiveStats(uint32_t framesSent, uint32_t framesReceived, uint32_t fpsPermille,
+                          bool audioActive, uint32_t audioFramesReceived);
+
     private:
         void DrawLogin();
         void DrawServers();
@@ -144,6 +149,13 @@ namespace wxl_ui
         double lastPositionSeconds_ = 0.0;
         bool browsingWatchlist_ = false;
         bool searchActive_ = false;
+        bool liveBroadcasting_ = false;
+        bool liveWatching_ = false;
+        uint32_t liveFramesSent_ = 0;
+        uint32_t liveFramesReceived_ = 0;
+        uint32_t liveFpsPermille_ = 0;
+        bool liveAudioActive_ = false;
+        uint32_t liveAudioFramesReceived_ = 0;
         std::string status_ = "Starting Plex helper.";
     };
 }

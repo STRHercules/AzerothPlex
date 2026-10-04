@@ -827,6 +827,24 @@ namespace wxl_ui
             case wxl_party::PartyMessageType::PublicRooms:
                 publicRooms_ = event.publicRooms;
                 break;
+            case wxl_party::PartyMessageType::LiveStarted:
+                liveBroadcasting_ = event.live.broadcasterId == party_->ClientId();
+                status_ = liveBroadcasting_
+                    ? "You are live. Room members can watch your broadcast."
+                    : "A live broadcast started in this room.";
+                break;
+            case wxl_party::PartyMessageType::LiveStopped:
+                liveBroadcasting_ = false;
+                liveWatching_ = false;
+                status_ = "The live broadcast ended.";
+                break;
+            case wxl_party::PartyMessageType::LiveState:
+                if (!event.live.active)
+                {
+                    liveBroadcasting_ = false;
+                    liveWatching_ = false;
+                }
+                break;
             case wxl_party::PartyMessageType::Error:
                 state_.error = event.error.empty() ? "Watch Together error." : event.error;
                 status_ = state_.error;
@@ -1196,6 +1214,8 @@ namespace wxl_ui
         case wxl_video_shared::UiCommand::LeaveParty:
             if (party_) party_->LeaveRoom();
             if (sync_) sync_->Reset();
+            liveBroadcasting_ = false;
+            liveWatching_ = false;
             pendingRemoteMedia_ = false;
             pendingControlRequest_.clear();
             pendingControlRequestId_.clear();
@@ -1432,6 +1452,45 @@ namespace wxl_ui
                 status_ = "Shared cinema layout updated.";
             }
             break;
+        case wxl_video_shared::UiCommand::GoLive:
+            if (!party_ || !partySettings_.features.liveBroadcast)
+            {
+                state_.error = "Live broadcast is disabled.";
+                break;
+            }
+            if (party_->Role() != wxl_party::PartyRole::Host)
+            {
+                state_.error = "Only the watch-party host can go live.";
+                break;
+            }
+            if (playingItem_.ratingKey.empty() || stopped_)
+            {
+                state_.error = "Play a Plex item before going live.";
+                break;
+            }
+            party_->SendLiveStart();
+            status_ = "Starting live broadcast.";
+            break;
+        case wxl_video_shared::UiCommand::StopLive:
+            if (party_) party_->SendLiveStop();
+            liveBroadcasting_ = false;
+            status_ = "Stopping live broadcast.";
+            break;
+        case wxl_video_shared::UiCommand::WatchLive:
+            if (!party_) break;
+            party_->SendLiveWatch();
+            liveWatching_ = true;
+            player_->Stop();
+            paused_ = false;
+            stopped_ = true;
+            lastPositionSeconds_ = 0.0;
+            status_ = "Watching live broadcast.";
+            break;
+        case wxl_video_shared::UiCommand::StopWatchingLive:
+            if (party_) party_->SendLiveUnwatch();
+            liveWatching_ = false;
+            status_ = "Stopped watching the live broadcast.";
+            break;
         case wxl_video_shared::UiCommand::SignOut:
             player_->Stop();
             plex_->SignOut();
@@ -1469,6 +1528,16 @@ namespace wxl_ui
         default:
             break;
         }
+    }
+
+    void NativeUi::SetLiveStats(uint32_t framesSent, uint32_t framesReceived, uint32_t fpsPermille,
+                                bool audioActive, uint32_t audioFramesReceived)
+    {
+        liveFramesSent_ = framesSent;
+        liveFramesReceived_ = framesReceived;
+        liveFpsPermille_ = fpsPermille;
+        liveAudioActive_ = audioActive;
+        liveAudioFramesReceived_ = audioFramesReceived;
     }
 
     void NativeUi::PlayCurrentItem()
@@ -1609,6 +1678,15 @@ namespace wxl_ui
             snapshot.partyReconnectCount = party_->ReconnectCount();
             snapshot.partyRoomEpoch = room.roomEpoch;
             snapshot.partySequence = room.sequence;
+            snapshot.partyLiveActive = room.live.active ? 1u : 0u;
+            snapshot.partyLiveBroadcasting = liveBroadcasting_ ? 1u : 0u;
+            snapshot.partyLiveWatching = liveWatching_ ? 1u : 0u;
+            snapshot.partyLiveViewerCount = room.live.watcherCount;
+            snapshot.partyLiveFramesSent = liveFramesSent_;
+            snapshot.partyLiveFramesReceived = liveFramesReceived_;
+            snapshot.partyLiveFpsPermille = liveFpsPermille_;
+            snapshot.partyLiveAudioActive = liveAudioActive_ ? 1u : 0u;
+            snapshot.partyLiveAudioFramesReceived = liveAudioFramesReceived_;
             CopyText(snapshot.partyRoomCode, room.code);
             CopyText(snapshot.partyError, party_->LastError());
             CopyText(snapshot.partyMediaMatch, partyMediaMatch_);
@@ -1937,9 +2015,54 @@ namespace wxl_ui
             }
             ImGui::SameLine();
             if (ImGui::Button("Ready")) party_->SetReady(true);
+            if (partySettings_.features.liveBroadcast)
+            {
+                if (room.live.active)
+                {
+                    ImGui::Text("Live broadcast | %u viewer%s", room.live.watcherCount,
+                                room.live.watcherCount == 1 ? "" : "s");
+                    if (liveWatching_)
+                    {
+                        if (ImGui::Button("Leave live"))
+                        {
+                            party_->SendLiveUnwatch();
+                            liveWatching_ = false;
+                        }
+                    }
+                    else if (ImGui::Button("Watch live"))
+                    {
+                        party_->SendLiveWatch();
+                        liveWatching_ = true;
+                        player_->Stop();
+                        paused_ = false;
+                        stopped_ = true;
+                        lastPositionSeconds_ = 0.0;
+                    }
+                    if (liveBroadcasting_)
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::Button("Stop live")) party_->SendLiveStop();
+                    }
+                }
+                else if (party_->Role() == wxl_party::PartyRole::Host && ImGui::Button("Go live"))
+                {
+                    if (playingItem_.ratingKey.empty() || stopped_)
+                        state_.error = "Play a Plex item before going live.";
+                    else
+                    {
+                        party_->SendLiveStart();
+                        status_ = "Starting live broadcast.";
+                    }
+                }
+            }
             if (ImGui::Button("Queue")) state_.view = View::Queue;
             ImGui::SameLine();
-            if (ImGui::Button("Leave")) party_->LeaveRoom();
+            if (ImGui::Button("Leave"))
+            {
+                party_->LeaveRoom();
+                liveBroadcasting_ = false;
+                liveWatching_ = false;
+            }
         }
         if (ImGui::Button("Back")) state_.view = View::Home;
     }

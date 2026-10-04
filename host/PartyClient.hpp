@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace wxl_party
 {
@@ -44,7 +46,14 @@ namespace wxl_party
         void SendControlRequest(std::string request, std::string requestId = {});
         void SendControlResponse(std::string requestId, bool allowed);
 
+        void SendLiveStart();
+        void SendLiveStop();
+        void SendLiveWatch();
+        void SendLiveUnwatch();
+        void SendBinaryFrame(std::span<const uint8_t> data);
+
         bool PopEvent(PartyWireMessage& message);
+        bool PopBinaryFrame(std::vector<uint8_t>& data);
 
         PartyConnectionState ConnectionState() const;
         PartyRoom Room() const;
@@ -64,11 +73,15 @@ namespace wxl_party
         void Worker(std::stop_token stop);
         HINTERNET OpenWebSocket(HINTERNET& session, HINTERNET& connection);
         bool FlushOutgoing(HINTERNET socket);
-        bool ReceiveOne(HINTERNET socket, std::string& text, bool& closed);
+        void FlushBinary(HINTERNET socket);
+        bool ReceiveOne(HINTERNET socket, std::string& text, std::vector<uint8_t>& binary,
+                        bool& isBinary, bool& closed);
         void Queue(PartyWireMessage message);
         bool SendNow(HINTERNET socket, const PartyWireMessage& message);
+        bool SendBinaryNow(HINTERNET socket, std::span<const uint8_t> data);
         void HandleIncoming(const PartyWireMessage& message);
         void PushEvent(PartyWireMessage message);
+        void PushBinary(std::vector<uint8_t> data);
         void SetState(PartyConnectionState state, std::string error = {});
         PartyWireMessage BaseMessage(PartyMessageType type) const;
 
@@ -86,6 +99,15 @@ namespace wxl_party
 
         std::mutex eventsMutex_;
         std::deque<PartyWireMessage> events_;
+
+        // Live frames keep only the newest pending outgoing frame and a short
+        // incoming queue so a slow connection skips frames instead of drifting.
+        std::mutex binaryOutMutex_;
+        std::vector<uint8_t> pendingFrame_;
+        bool hasPendingFrame_ = false;
+
+        std::mutex binaryInMutex_;
+        std::deque<std::vector<uint8_t>> binaryEvents_;
 
         std::mutex socketMutex_;
         HINTERNET socket_ = nullptr;

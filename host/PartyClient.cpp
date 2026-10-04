@@ -165,8 +165,12 @@ namespace wxl_party
     {
         PartyWireMessage message = BaseMessage(PartyMessageType::RoomLeave);
         Queue(std::move(message));
-        std::lock_guard lock(stateMutex_);
-        room_ = {};
+        {
+            std::lock_guard lock(stateMutex_);
+            room_ = {};
+        }
+        std::lock_guard binaryLock(binaryInMutex_);
+        binaryEvents_.clear();
     }
 
     void PartyClient::RequestRoomState()
@@ -245,6 +249,35 @@ namespace wxl_party
         Queue(std::move(message));
     }
 
+    void PartyClient::SendLiveStart()
+    {
+        Connect();
+        Queue(BaseMessage(PartyMessageType::LiveStart));
+    }
+
+    void PartyClient::SendLiveStop()
+    {
+        Queue(BaseMessage(PartyMessageType::LiveStop));
+    }
+
+    void PartyClient::SendLiveWatch()
+    {
+        Queue(BaseMessage(PartyMessageType::LiveWatch));
+    }
+
+    void PartyClient::SendLiveUnwatch()
+    {
+        Queue(BaseMessage(PartyMessageType::LiveUnwatch));
+    }
+
+    void PartyClient::SendBinaryFrame(std::span<const uint8_t> data)
+    {
+        if (data.empty() || data.size() > kMaxPartyFrameBytes) return;
+        std::lock_guard lock(binaryOutMutex_);
+        pendingFrame_.assign(data.begin(), data.end());
+        hasPendingFrame_ = true;
+    }
+
     void PartyClient::Queue(PartyWireMessage message)
     {
         if (message.senderId.empty()) message.senderId = clientId_;
@@ -268,6 +301,15 @@ namespace wxl_party
         return result == ERROR_SUCCESS;
     }
 
+    bool PartyClient::SendBinaryNow(HINTERNET socket, std::span<const uint8_t> data)
+    {
+        if (!socket || data.empty() || data.size() > kMaxPartyFrameBytes) return false;
+        const DWORD result = WinHttpWebSocketSend(
+            socket, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+            const_cast<uint8_t*>(data.data()), static_cast<DWORD>(data.size()));
+        return result == ERROR_SUCCESS;
+    }
+
     bool PartyClient::FlushOutgoing(HINTERNET socket)
     {
         for (;;)
@@ -288,9 +330,26 @@ namespace wxl_party
         }
     }
 
-    bool PartyClient::ReceiveOne(HINTERNET socket, std::string& text, bool& closed)
+    void PartyClient::FlushBinary(HINTERNET socket)
+    {
+        std::vector<uint8_t> frame;
+        {
+            std::lock_guard lock(binaryOutMutex_);
+            if (!hasPendingFrame_) return;
+            frame.swap(pendingFrame_);
+            hasPendingFrame_ = false;
+        }
+        // A failed send means the socket is going down; drop the stale frame and
+        // let the next keyframe resynchronize the viewer.
+        SendBinaryNow(socket, frame);
+    }
+
+    bool PartyClient::ReceiveOne(HINTERNET socket, std::string& text, std::vector<uint8_t>& binary,
+                                 bool& isBinary, bool& closed)
     {
         text.clear();
+        binary.clear();
+        isBinary = false;
         closed = false;
         std::vector<char> buffer(kReceiveBufferBytes);
         WINHTTP_WEB_SOCKET_BUFFER_TYPE type = WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE;
@@ -307,13 +366,27 @@ namespace wxl_party
                 closed = true;
                 return true;
             }
+            const bool binaryFrame =
+                type == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE ||
+                type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE;
+            isBinary = isBinary || binaryFrame;
             if (read > 0)
             {
-                if (text.size() + read > kMaxPartyMessageBytes) return false;
-                text.append(buffer.data(), read);
+                if (isBinary)
+                {
+                    if (binary.size() + read > kMaxPartyFrameBytes) return false;
+                    binary.insert(binary.end(), buffer.data(), buffer.data() + read);
+                }
+                else
+                {
+                    if (text.size() + read > kMaxPartyMessageBytes) return false;
+                    text.append(buffer.data(), read);
+                }
             }
-        } while (type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE);
-        return type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE || text.empty();
+        } while (type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE ||
+                 type == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE);
+        return isBinary ||
+               type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE || text.empty();
     }
 
     HINTERNET PartyClient::OpenWebSocket(HINTERNET& session, HINTERNET& connection)
@@ -444,6 +517,7 @@ namespace wxl_party
             while (connected && desiredConnected_.load() && !stop.stop_requested())
             {
                 if (!FlushOutgoing(socket)) break;
+                FlushBinary(socket);
                 const int64_t now = NowMs();
                 if (now - lastPingSentMs_ >= 5000)
                 {
@@ -454,9 +528,16 @@ namespace wxl_party
                 }
 
                 std::string text;
+                std::vector<uint8_t> binary;
+                bool isBinary = false;
                 bool closed = false;
-                if (!ReceiveOne(socket, text, closed)) break;
+                if (!ReceiveOne(socket, text, binary, isBinary, closed)) break;
                 if (closed) break;
+                if (isBinary)
+                {
+                    if (!binary.empty()) PushBinary(std::move(binary));
+                    continue;
+                }
                 if (text.empty()) continue;
                 PartyWireMessage incoming;
                 std::string error;
@@ -523,6 +604,8 @@ namespace wxl_party
             room_.members = message.members;
             room_.queue = message.queue;
             room_.cinema = message.cinema;
+            room_.live = message.live;
+            room_.live.watching = false;
             room_.readyCheckActive = message.readyCheckActive;
             room_.readyStartAtMs = message.readyStartAtMs;
             settings_.lastRoomCode = room_.code;
@@ -576,6 +659,23 @@ namespace wxl_party
         case PartyMessageType::ScreenPreset:
             room_.cinema = message.cinema;
             break;
+        case PartyMessageType::LiveStarted:
+            room_.live = message.live;
+            room_.live.active = true;
+            break;
+        case PartyMessageType::LiveStopped:
+            room_.live = message.live;
+            room_.live.active = false;
+            room_.live.watching = false;
+            room_.live.watcherCount = 0;
+            break;
+        case PartyMessageType::LiveState:
+        {
+            const bool watching = room_.live.watching;
+            room_.live = message.live;
+            room_.live.watching = watching;
+            break;
+        }
         case PartyMessageType::Pong:
             if (message.sentAtMs > 0)
             {
@@ -605,6 +705,22 @@ namespace wxl_party
         if (events_.empty()) return false;
         message = std::move(events_.front());
         events_.pop_front();
+        return true;
+    }
+
+    void PartyClient::PushBinary(std::vector<uint8_t> data)
+    {
+        std::lock_guard lock(binaryInMutex_);
+        if (binaryEvents_.size() >= 8) binaryEvents_.pop_front();
+        binaryEvents_.push_back(std::move(data));
+    }
+
+    bool PartyClient::PopBinaryFrame(std::vector<uint8_t>& data)
+    {
+        std::lock_guard lock(binaryInMutex_);
+        if (binaryEvents_.empty()) return false;
+        data = std::move(binaryEvents_.front());
+        binaryEvents_.pop_front();
         return true;
     }
 

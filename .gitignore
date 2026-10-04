@@ -1,6 +1,10 @@
 # Build and release output
 build/
 dist/
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
 extension/build/
 host/build/
 host/third_party/webview2/
