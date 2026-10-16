@@ -142,6 +142,9 @@ namespace wxl_mpv
             api_->setOptionString(handle_, "cache", "yes") < 0 ||
             api_->setOptionString(handle_, "network-timeout", "30") < 0 ||
             api_->setOptionString(handle_, "idle", "yes") < 0 ||
+            // The frame is always 640x360: fill it, and let the screen in game restore the shape from video-params/aspect.
+            // Letterboxed in here as well, a 4:3 picture came out squeezed with bars on a 4:3 screen.
+            api_->setOptionString(handle_, "keepaspect", "no") < 0 ||
             api_->initialize(handle_) < 0)
         {
             Shutdown();
